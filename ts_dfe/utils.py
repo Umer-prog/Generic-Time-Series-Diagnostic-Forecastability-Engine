@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -69,11 +70,39 @@ def seconds_to_alias(freq_seconds: float) -> Optional[str]:
         return f"{days}D"
     if s % 3600 == 0:
         hours = s // 3600
-        return f"{hours}H"
+        return f"{hours}h"
     if s % 60 == 0:
         minutes = s // 60
-        return f"{minutes}T"
-    return f"{s}S"
+        return f"{minutes}min"
+    return f"{s}s"
+
+
+def normalize_freq_alias(freq_alias: Optional[str]) -> Optional[str]:
+    if freq_alias is None:
+        return None
+    alias = str(freq_alias).strip()
+    if not alias:
+        return None
+
+    m = re.match(r"^(\d+)?([A-Za-z]+)(-.+)?$", alias)
+    if not m:
+        return alias
+
+    num, unit, suffix = m.groups()
+    if suffix:
+        return alias
+
+    replacements = {
+        "H": "h",
+        "T": "min",
+        "S": "s",
+        "L": "ms",
+        "U": "us",
+        "N": "ns",
+    }
+    if unit in replacements:
+        return f"{num or ''}{replacements[unit]}"
+    return alias
 
 
 def infer_frequency(index: pd.DatetimeIndex) -> Tuple[Optional[str], float]:
@@ -84,9 +113,10 @@ def infer_frequency(index: pd.DatetimeIndex) -> Tuple[Optional[str], float]:
     inferred = pd.infer_freq(idx)
     if inferred:
         try:
-            offset = pd.tseries.frequencies.to_offset(inferred)
+            normalized = normalize_freq_alias(inferred)
+            offset = pd.tseries.frequencies.to_offset(normalized)
             seconds = _offset_to_seconds(offset)
-            return inferred, safe_float(seconds)
+            return normalized, safe_float(seconds)
         except Exception:
             pass
 
@@ -100,9 +130,10 @@ def infer_frequency(index: pd.DatetimeIndex) -> Tuple[Optional[str], float]:
 def resolve_frequency(index: pd.DatetimeIndex, freq: Optional[str]) -> Tuple[Optional[str], float]:
     if freq:
         try:
-            offset = pd.tseries.frequencies.to_offset(freq)
+            normalized = normalize_freq_alias(freq)
+            offset = pd.tseries.frequencies.to_offset(normalized)
             seconds = _offset_to_seconds(offset)
-            return freq, safe_float(seconds)
+            return normalized, safe_float(seconds)
         except Exception:
             pass
     return infer_frequency(index)

@@ -9,6 +9,33 @@ This document explains the current implementation of `ts_dfe` in functional deta
 
 The goal is to make it easy to reason about behavior, validate outputs, and extend the code safely.
 
+## 0. Expanded Mode Addendum (Latest)
+
+The engine now supports two runtime shapes:
+
+1. Legacy single-target path (backward-compatible):
+   - Triggered when one target is provided and no multivariate/grain features are requested.
+   - Returns the same `TSDFEReport` contract as before.
+2. Expanded path:
+   - Supports `target_cols`, `feature_cols`, `grain_cols`, `granularity_levels`, and `mode`.
+   - Returns structured sections:
+   - `overall_univariate`
+   - `overall_multivariate`
+   - `overall_by_granularity`
+   - `by_grain`
+   - `best_granularity_by_target`
+   - `recommended_approach_by_target`
+
+External module added:
+- `multivariate_decision/diagnostic.py`
+- Class: `MultivariateDiagnostic`
+- Methods:
+  - `granger_test(...)`
+  - `residual_corr_test(...)`
+  - `cv_comparison(...)`
+  - `structural_violation_check(...)`
+  - `diagnose(...)`
+
 ## 1. High-Level Design
 
 `TS-DFE` is a modular diagnostics engine for univariate time series (with optional structural/entity columns).  

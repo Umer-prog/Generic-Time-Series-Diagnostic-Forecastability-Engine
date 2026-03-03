@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pandas as pd
 
@@ -46,7 +48,10 @@ def _acf_with_fallback(series: pd.Series, max_lag: int = 10) -> dict[int, float]
 
     if HAS_STATSMODELS:
         try:
-            vals = sm_acf(s.values, nlags=max_lag, fft=False)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                with np.errstate(all="ignore"):
+                    vals = sm_acf(s.values, nlags=max_lag, fft=False)
             out = {lag: np.nan for lag in range(max_lag + 1)}
             for lag, val in enumerate(vals):
                 out[lag] = safe_float(val)
@@ -65,7 +70,10 @@ def _pacf_with_fallback(series: pd.Series, max_lag: int = 10) -> dict[int, float
 
     if HAS_STATSMODELS:
         try:
-            vals = sm_pacf(s.values, nlags=max_lag, method="ywm")
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                with np.errstate(all="ignore"):
+                    vals = sm_pacf(s.values, nlags=max_lag, method="ywm")
             for lag in range(1, min(len(vals), max_lag + 1)):
                 out[lag] = safe_float(vals[lag])
             return out
@@ -105,7 +113,10 @@ def analyze_temporal(series: pd.Series, freq_seconds: float) -> dict:
 
     if HAS_STATSMODELS and n > 15:
         try:
-            lb = acorr_ljungbox(s.values, lags=[min(10, n - 1)], return_df=True)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                with np.errstate(all="ignore"):
+                    lb = acorr_ljungbox(s.values, lags=[min(10, n - 1)], return_df=True)
             ljung_p = safe_float(lb["lb_pvalue"].iloc[0], default=np.nan)
         except Exception:
             ljung_p = np.nan
@@ -123,7 +134,10 @@ def analyze_temporal(series: pd.Series, freq_seconds: float) -> dict:
 
     if HAS_STATSMODELS and seasonal_lag >= 2 and n >= (3 * seasonal_lag):
         try:
-            stl = STL(s, period=seasonal_lag, robust=True).fit()
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                with np.errstate(all="ignore"):
+                    stl = STL(s, period=seasonal_lag, robust=True).fit()
             var_resid = np.var(stl.resid)
             var_combined = np.var(stl.seasonal + stl.resid)
             seasonality_strength = clip01(1.0 - safe_div(var_resid, var_combined, default=1.0))

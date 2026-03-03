@@ -13,8 +13,27 @@ Generic Time Series Diagnostic & Forecastability Engine with 8 modular layers:
 
 Entry point:
 
-- `engine.py` -> `run_ts_dfe(df, date_col, target_col, structural_cols=None, freq=None)`
-- Detailed function-by-function architecture: `FUNCTIONAL_ARCHITECTURE.md`
+- `ts_dfe/engine.py` -> `run_ts_dfe(...)`
+- Detailed architecture: `ts_dfe/FUNCTIONAL_ARCHITECTURE.md`
+- External multivariate decision helper: `multivariate_decision/diagnostic.py`
+
+Common usage modes:
+
+1. Backward-compatible univariate mode:
+   - `run_ts_dfe(df, date_col="date", target_col="sales", structural_cols=["customer"])`
+2. Expanded multivariate mode:
+   - `run_ts_dfe(df, date_col="date", target_cols=["sales", "demand"], feature_cols=["marketing"], mode="multivariate")`
+3. Grain-wise mode:
+   - `run_ts_dfe(df, date_col="date", target_cols=["sales"], grain_cols=["region"], mode="multivariate")`
+
+Expanded output sections (non-legacy mode):
+
+- `overall_univariate`
+- `overall_multivariate`
+- `overall_by_granularity`
+- `by_grain`
+- `recommended_approach_by_target`
+- `best_granularity_by_target`
 
 Output keys:
 

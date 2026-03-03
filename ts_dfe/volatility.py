@@ -16,6 +16,23 @@ except ImportError:
     from utils import clip, clip01, manual_acf, rolling_window_size, safe_float
 
 
+def _safe_corr(x: pd.Series, y: pd.Series) -> float:
+    sx = pd.Series(x, dtype=float)
+    sy = pd.Series(y, dtype=float)
+    frame = pd.concat([sx, sy], axis=1).dropna()
+    if len(frame) < 3:
+        return np.nan
+    xv = frame.iloc[:, 0].values
+    yv = frame.iloc[:, 1].values
+    if np.std(xv, ddof=0) < 1e-12 or np.std(yv, ddof=0) < 1e-12:
+        return np.nan
+    with np.errstate(all="ignore"):
+        corr = np.corrcoef(xv, yv)[0, 1]
+    if not np.isfinite(corr):
+        return np.nan
+    return float(corr)
+
+
 def analyze_volatility(series: pd.Series) -> dict:
     s = pd.Series(series, dtype=float).dropna()
     n = len(s)
@@ -36,7 +53,7 @@ def analyze_volatility(series: pd.Series) -> dict:
 
     roll_std = changes.rolling(window=window).std()
     roll_mean_abs = changes.abs().rolling(window=window).mean()
-    rolling_std_mean_corr = safe_float(roll_std.corr(roll_mean_abs), default=np.nan)
+    rolling_std_mean_corr = safe_float(_safe_corr(roll_std, roll_mean_abs), default=np.nan)
 
     if HAS_ARCH_TEST and len(changes) >= 20:
         try:

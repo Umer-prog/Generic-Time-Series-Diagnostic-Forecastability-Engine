@@ -226,3 +226,127 @@ def build_human_readable_report(report: dict) -> str:
     )
 
     return "\n".join(lines)
+
+
+def build_expanded_human_readable_report(report: dict) -> str:
+    mode = report.get("mode", "unknown")
+    config = report.get("config", {}) if isinstance(report.get("config", {}), dict) else {}
+    targets = config.get("target_cols", [])
+    features = config.get("feature_cols", [])
+    grains = config.get("grain_cols", [])
+    levels = config.get("granularity_levels", [])
+
+    overall_uni = report.get("overall_univariate", {})
+    overall_multi = report.get("overall_multivariate", {})
+    best_grain = report.get("best_granularity_by_target", {})
+    by_grain = report.get("by_grain", {})
+    overall_by_level = report.get("overall_by_granularity", {})
+
+    lines: list[str] = []
+    lines.append("TS-DFE EXPANDED REPORT")
+    lines.append("----------------------------------------")
+    lines.append(f"Mode: {mode}")
+    lines.append(f"Targets: {targets}")
+    lines.append(f"Features: {features if features else 'None'}")
+    lines.append(f"Grain Columns: {grains if grains else 'None'}")
+    lines.append(f"Granularity Levels: {levels if levels else 'None'}")
+    lines.append("")
+
+    lines.append("TARGET OVERVIEW")
+    for target in targets:
+        uni = overall_uni.get(target, {})
+        multi = overall_multi.get(target, {})
+        lines.append(
+            f"- {target}: class={uni.get('classification', 'Unknown')}, "
+            f"score={_fmt_num(uni.get('forecastability_score', np.nan), 2)}, "
+            f"best_granularity={best_grain.get(target, 'n/a')}, "
+            f"recommended_approach={multi.get('recommendation', 'n/a')}"
+        )
+        uni_temporal = (
+            uni.get("temporal", {}) if isinstance(uni.get("temporal", {}), dict) else {}
+        )
+        uni_stationarity = (
+            uni.get("stationarity", {}) if isinstance(uni.get("stationarity", {}), dict) else {}
+        )
+        uni_volatility = (
+            uni.get("volatility", {}) if isinstance(uni.get("volatility", {}), dict) else {}
+        )
+        uni_distribution = (
+            uni.get("distribution", {}) if isinstance(uni.get("distribution", {}), dict) else {}
+        )
+        risk_flags = uni.get("risk_flags", []) if isinstance(uni, dict) else []
+        risk_count = len(risk_flags) if isinstance(risk_flags, list) else 0
+        lines.append(
+            "  "
+            f"temporal_signal={_fmt_num(uni_temporal.get('temporal_signal_strength_score', np.nan), 2)}, "
+            f"stability_score={_fmt_num(uni_stationarity.get('stability_score', np.nan), 2)}, "
+            f"volatility_risk={_fmt_num(uni_volatility.get('volatility_risk_score', np.nan), 2)}, "
+            f"distribution={uni_distribution.get('distribution_classification', 'n/a')}, "
+            f"risk_flags={risk_count}"
+        )
+        lines.append(
+            "  "
+            f"cross_lag_effect={multi.get('cross_lag_effect', 'n/a')}, "
+            f"residual_dependency={_fmt_num(multi.get('residual_dependency', np.nan), 3)}, "
+            f"cv_improvement_multivariate={_fmt_num(multi.get('cv_improvement_multivariate', np.nan), 3)}, "
+            f"feature_utility_score={_fmt_num(multi.get('feature_utility_score', np.nan), 1)}, "
+            f"add_features_decision={multi.get('add_features_decision', 'n/a')}, "
+            f"decision_confidence={_fmt_num(multi.get('decision_confidence', np.nan), 3)}"
+        )
+    lines.append("")
+
+    lines.append("OVERALL BY GRANULARITY")
+    for level, data in overall_by_level.items():
+        if not isinstance(data, dict) or not data:
+            lines.append(f"- {level}: no target output")
+            continue
+        for target, tdata in data.items():
+            lines.append(
+                f"- {level}/{target}: class={tdata.get('classification', 'Unknown')}, "
+                f"score={_fmt_num(tdata.get('forecastability_score', np.nan), 2)}, "
+                f"optimal_granularity={tdata.get('optimal_granularity', 'n/a')}"
+            )
+    lines.append("")
+
+    lines.append("GRAIN OVERVIEW")
+    lines.append(f"- total_groups={len(by_grain)}")
+    shown = 0
+    for grain_key, grain_data in by_grain.items():
+        if shown >= 12:
+            lines.append("- ... additional groups omitted for readability")
+            break
+        shown += 1
+        if isinstance(grain_data, dict) and grain_data.get("status") == "skipped_insufficient_points":
+            lines.append(f"- {grain_key}: skipped_insufficient_points (row_count={grain_data.get('row_count')})")
+            continue
+
+        lines.append(f"- {grain_key}: row_count={grain_data.get('row_count', 'n/a')}")
+        rec_map = grain_data.get("recommended_approach_by_target", {}) if isinstance(grain_data, dict) else {}
+        best_map = grain_data.get("best_granularity_by_target", {}) if isinstance(grain_data, dict) else {}
+        for target in targets:
+            rec = rec_map.get(target, "n/a") if isinstance(rec_map, dict) else "n/a"
+            bgr = best_map.get(target, "n/a") if isinstance(best_map, dict) else "n/a"
+            lines.append(f"  target={target}, recommendation={rec}, best_granularity={bgr}")
+    lines.append("")
+
+    lines.append("SUMMARY")
+    lines.append(str(report.get("summary", "")))
+    lines.append("")
+    lines.append("RAW STRUCTURE KEYS")
+    lines.append(
+        str(
+            [
+                "mode",
+                "config",
+                "overall_univariate",
+                "overall_multivariate",
+                "overall_by_granularity",
+                "best_granularity_by_target",
+                "recommended_approach_by_target",
+                "by_grain",
+                "summary",
+            ]
+        )
+    )
+
+    return "\n".join(lines)
