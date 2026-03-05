@@ -15,13 +15,30 @@ CORE_MODULES = [
     "granularity",
 ]
 
+MULTIVARIATE_SIGNAL_KEYS = [
+    "cross_lag_effect",
+    "residual_dependency",
+    "cv_improvement_multivariate",
+    "feature_utility_score",
+    "decision_confidence",
+    "exogenous_r2",
+    "ar_r2",
+    "exogenous_dominance_ratio",
+    "exogenous_signal_classification",
+    "recommendation",
+]
+
+
+def _is_expanded_report(report: dict) -> bool:
+    return isinstance(report, dict) and "overall_univariate" in report and "overall_multivariate" in report
+
 
 class TSDFEReport(dict):
     def __str__(self) -> str:
-        readable = self.get("human_readable_report", None)
-        if isinstance(readable, str) and readable:
-            return readable
-        return dict.__str__(self)
+        mode = str(self.get("report_mode", "technical")).strip().lower()
+        if mode == "summary":
+            return build_summary_report(self)
+        return build_technical_report(self)
 
     def __repr__(self) -> str:
         return self.__str__()
@@ -37,16 +54,6 @@ def _fmt_num(value: Any, decimals: int = 3) -> str:
     if abs(x) >= 1000:
         return f"{x:,.{decimals}f}"
     return f"{x:.{decimals}f}"
-
-
-def _fmt_pct(value: Any, decimals: int = 1) -> str:
-    try:
-        x = float(value)
-    except Exception:
-        return str(value)
-    if np.isnan(x):
-        return "nan"
-    return f"{100.0 * x:.{decimals}f}%"
 
 
 def _flatten(d: Any, prefix: str = "") -> dict[str, Any]:
@@ -99,7 +106,67 @@ def _split_recommendation_to_bullets(recommendation: str) -> list[str]:
     return [raw]
 
 
-def build_human_readable_report(report: dict) -> str:
+def _resolve_driver_signal(report: dict, multi: dict | None = None) -> dict:
+    m = multi if isinstance(multi, dict) else report.get("multivariate_signal", {})
+    if not isinstance(m, dict):
+        m = {}
+
+    ar_r2 = float(m.get("ar_r2", report.get("temporal", {}).get("ar5_r2", np.nan)))
+    if not np.isfinite(ar_r2):
+        ar_r2 = 0.0
+    exogenous_r2 = float(m.get("exogenous_r2", 0.0))
+    if not np.isfinite(exogenous_r2):
+        exogenous_r2 = 0.0
+    ratio = float(m.get("exogenous_dominance_ratio", exogenous_r2 / (ar_r2 + 1e-6)))
+    if not np.isfinite(ratio):
+        ratio = 0.0
+
+    signal_class = m.get("exogenous_signal_classification", None)
+    if not isinstance(signal_class, str) or not signal_class:
+        if ratio >= 1.5:
+            signal_class = "Exogenous Dominated"
+        elif ratio >= 0.7:
+            signal_class = "Mixed Drivers"
+        else:
+            signal_class = "Autoregressive Dominated"
+
+    return {
+        "exogenous_r2": float(exogenous_r2),
+        "ar_r2": float(ar_r2),
+        "exogenous_dominance_ratio": float(ratio),
+        "exogenous_signal_classification": signal_class,
+    }
+
+
+def _build_reason_block(report: dict, multi: dict | None = None) -> list[str]:
+    distribution = report.get("distribution", {})
+    volatility = report.get("volatility", {})
+    granularity = report.get("granularity", {})
+    driver = _resolve_driver_signal(report, multi=multi)
+
+    reason_items = [
+        f"volatility_classification={volatility.get('volatility_classification', 'Unknown')}",
+        f"distribution_classification={distribution.get('distribution_classification', 'Unknown')}",
+        f"model_improvement_ratio={_fmt_num(granularity.get('model_improvement_ratio', np.nan), 3)}",
+        f"exogenous_signal_classification={driver['exogenous_signal_classification']}",
+    ]
+    return reason_items
+
+
+def _append_final_output_fields(lines: list[str], report: dict, risk_flags: list[str]) -> None:
+    lines.append("[FINAL OUTPUT FIELDS]")
+    lines.append(f"- classification: {report.get('classification', 'Unknown')}")
+    lines.append(f"- forecastability_score: {_fmt_num(report.get('forecastability_score', np.nan), 3)}")
+    lines.append(f"- modeling_recommendation: {report.get('modeling_recommendation', '')}")
+    lines.append(f"- risk_flags_count: {len(risk_flags)}")
+    lines.append(f"- executive_summary: {report.get('executive_summary', '')}")
+    lines.append(
+        "- engineering_decision_recommendation: "
+        f"{report.get('engineering_decision_recommendation', '')}"
+    )
+
+
+def build_univariate_technical_report(report: dict) -> str:
     integrity = report.get("integrity", {})
     distribution = report.get("distribution", {})
     temporal = report.get("temporal", {})
@@ -212,38 +279,154 @@ def build_human_readable_report(report: dict) -> str:
             lines.append(f"- {key}: {rendered}")
         lines.append("")
 
-    lines.append("[FINAL OUTPUT FIELDS]")
-    lines.append(f"- classification: {report.get('classification', 'Unknown')}")
-    lines.append(f"- forecastability_score: {_fmt_num(report.get('forecastability_score', np.nan), 3)}")
-    lines.append(f"- modeling_recommendation: {report.get('modeling_recommendation', '')}")
-    lines.append(
-        f"- risk_flags_count: {len(risk_flags)}"
-    )
-    lines.append(f"- executive_summary: {report.get('executive_summary', '')}")
-    lines.append(
-        "- engineering_decision_recommendation: "
-        f"{report.get('engineering_decision_recommendation', '')}"
-    )
-
+    _append_final_output_fields(lines, report, risk_flags)
     return "\n".join(lines)
 
 
-def build_expanded_human_readable_report(report: dict) -> str:
+def build_univariate_summary_report(report: dict) -> str:
+    distribution = report.get("distribution", {})
+    temporal = report.get("temporal", {})
+    stationarity = report.get("stationarity", {})
+    volatility = report.get("volatility", {})
+    structure = report.get("structure", {})
+    granularity = report.get("granularity", {})
+    risk_flags = report.get("risk_flags", [])
+    if not isinstance(risk_flags, list):
+        risk_flags = [str(risk_flags)]
+
+    acf_vals = [
+        abs(float(temporal.get("acf_lag_1", np.nan))),
+        abs(float(temporal.get("acf_lag_2", np.nan))),
+        abs(float(temporal.get("acf_lag_3", np.nan))),
+    ]
+    acf_vals = [x for x in acf_vals if np.isfinite(x)]
+    avg_acf = float(np.mean(acf_vals)) if acf_vals else np.nan
+
+    temporal_score = float(temporal.get("temporal_signal_strength_score", np.nan))
+    signal_label = _signal_label(temporal_score)
+    seasonality_strength = float(temporal.get("seasonality_strength_stl", np.nan))
+    seasonality_label = _seasonality_label(seasonality_strength)
+
+    optimal_granularity = str(granularity.get("optimal_granularity", "original"))
+    signal_gain_ratio = float(granularity.get("signal_gain_ratio", np.nan))
+    signal_gain_pct = (signal_gain_ratio - 1.0) * 100.0 if np.isfinite(signal_gain_ratio) else np.nan
+
+    driver = _resolve_driver_signal(report)
+    reason_items = _build_reason_block(report)
+
+    recommendation = str(report.get("modeling_recommendation", "")).strip()
+    action = recommendation
+    if " because " in recommendation:
+        action = recommendation.split(" because ", 1)[0].rstrip(".")
+
+    lines: list[str] = []
+    lines.append("DATA CHARACTERIZATION REPORT")
+    lines.append("----------------------------------------")
+    lines.append(
+        f"Signal Strength: {signal_label} "
+        f"(temporal_signal_strength_score={_fmt_num(temporal_score, 1)}, avg_acf_lag_1_3={_fmt_num(avg_acf, 3)})"
+    )
+    lines.append(
+        f"Variance: {volatility.get('volatility_classification', 'Unknown')} "
+        f"(volatility_risk_score={_fmt_num(volatility.get('volatility_risk_score', np.nan), 1)})"
+    )
+    lines.append(
+        f"Distribution: {distribution.get('distribution_classification', 'Unknown')} "
+        f"(skewness={_fmt_num(distribution.get('skewness', np.nan), 3)}, "
+        f"kurtosis={_fmt_num(distribution.get('kurtosis', np.nan), 3)})"
+    )
+    lines.append(
+        f"Concentration: {structure.get('structure_classification', 'Not provided')} "
+        f"(top5_revenue_share_pct={_fmt_num(structure.get('top5_revenue_share_pct', np.nan), 2)}%)"
+    )
+    lines.append(
+        f"Seasonality: {seasonality_label} "
+        f"(seasonality_strength_stl={_fmt_num(seasonality_strength, 3)}, "
+        f"seasonal_lag={_fmt_num(temporal.get('seasonal_lag', np.nan), 0)})"
+    )
+    lines.append(
+        f"Granularity: optimal={optimal_granularity} "
+        f"(signal_gain={_fmt_num(signal_gain_pct, 1)}%, "
+        f"noise_reduction_ratio={_fmt_num(granularity.get('noise_reduction_ratio', np.nan), 3)})"
+    )
+    lines.append(
+        f"Driver Signal: {driver['exogenous_signal_classification']} "
+        f"(exogenous_dominance_ratio={_fmt_num(driver['exogenous_dominance_ratio'], 2)}, "
+        f"exogenous_r2={_fmt_num(driver['exogenous_r2'], 2)}, "
+        f"ar_r2={_fmt_num(driver['ar_r2'], 2)})"
+    )
+    lines.append("")
+    lines.append(f"CLASSIFICATION: {report.get('classification', 'Unknown')}")
+    lines.append("")
+    lines.append(f"FORECASTABILITY SCORE: {_fmt_num(report.get('forecastability_score', np.nan), 0)}/100")
+    lines.append("RECOMMENDATION:")
+    lines.append(f"- {action if action else 'No recommendation generated'}")
+    lines.append("")
+    lines.append("Reason:")
+    lines.append(",\n".join(reason_items))
+    lines.append("")
+    lines.append("RISK FLAGS:")
+    if risk_flags:
+        for item in risk_flags:
+            lines.append(f"- {item}")
+    else:
+        lines.append("- None")
+    lines.append("")
+    lines.append("EXECUTIVE SUMMARY:")
+    lines.append(
+        f"{report.get('classification', 'Unknown')} with forecastability_score="
+        f"{_fmt_num(report.get('forecastability_score', np.nan), 2)}."
+    )
+    lines.append("")
+    lines.append("Key metrics:")
+    lines.append(
+        f"temporal_signal_strength_score={_fmt_num(temporal_score, 3)},\n"
+        f"stability_score={_fmt_num(stationarity.get('stability_score', np.nan), 3)},\n"
+        f"model_improvement_ratio={_fmt_num(granularity.get('model_improvement_ratio', np.nan), 3)},\n"
+        f"exogenous_dominance_ratio={_fmt_num(driver['exogenous_dominance_ratio'], 2)},\n"
+        f"optimal_granularity={optimal_granularity}."
+    )
+    lines.append("")
+    lines.append("ENGINEERING DECISION RECOMMENDATION:")
+    lines.append(str(report.get("engineering_decision_recommendation", "")))
+    lines.append("")
+    _append_final_output_fields(lines, report, risk_flags)
+    return "\n".join(lines)
+
+
+def _render_module(lines: list[str], module_name: str, module_data: dict) -> None:
+    lines.append(f"[{module_name.upper()}]")
+    flat = _flatten(module_data)
+    for key in sorted(flat.keys()):
+        value = flat[key]
+        if isinstance(value, str):
+            rendered = value
+        elif isinstance(value, (float, int, np.floating, np.integer)):
+            rendered = _fmt_num(value)
+        elif isinstance(value, list):
+            rendered = ", ".join(str(x) for x in value) if value else "[]"
+        else:
+            rendered = str(value)
+        lines.append(f"- {key}: {rendered}")
+    lines.append("")
+
+
+def build_expanded_technical_report(report: dict) -> str:
     mode = report.get("mode", "unknown")
     config = report.get("config", {}) if isinstance(report.get("config", {}), dict) else {}
     targets = config.get("target_cols", [])
     features = config.get("feature_cols", [])
     grains = config.get("grain_cols", [])
     levels = config.get("granularity_levels", [])
-
     overall_uni = report.get("overall_univariate", {})
     overall_multi = report.get("overall_multivariate", {})
-    best_grain = report.get("best_granularity_by_target", {})
-    by_grain = report.get("by_grain", {})
     overall_by_level = report.get("overall_by_granularity", {})
+    by_grain = report.get("by_grain", {})
+    best_grain = report.get("best_granularity_by_target", {})
 
     lines: list[str] = []
     lines.append("TS-DFE EXPANDED REPORT")
+    lines.append("=== TECHNICAL DIAGNOSTIC REPORT ===")
     lines.append("----------------------------------------")
     lines.append(f"Mode: {mode}")
     lines.append(f"Targets: {targets}")
@@ -252,48 +435,35 @@ def build_expanded_human_readable_report(report: dict) -> str:
     lines.append(f"Granularity Levels: {levels if levels else 'None'}")
     lines.append("")
 
-    lines.append("TARGET OVERVIEW")
     for target in targets:
         uni = overall_uni.get(target, {})
         multi = overall_multi.get(target, {})
-        lines.append(
-            f"- {target}: class={uni.get('classification', 'Unknown')}, "
-            f"score={_fmt_num(uni.get('forecastability_score', np.nan), 2)}, "
-            f"best_granularity={best_grain.get(target, 'n/a')}, "
-            f"recommended_approach={multi.get('recommendation', 'n/a')}"
-        )
-        uni_temporal = (
-            uni.get("temporal", {}) if isinstance(uni.get("temporal", {}), dict) else {}
-        )
-        uni_stationarity = (
-            uni.get("stationarity", {}) if isinstance(uni.get("stationarity", {}), dict) else {}
-        )
-        uni_volatility = (
-            uni.get("volatility", {}) if isinstance(uni.get("volatility", {}), dict) else {}
-        )
-        uni_distribution = (
-            uni.get("distribution", {}) if isinstance(uni.get("distribution", {}), dict) else {}
-        )
-        risk_flags = uni.get("risk_flags", []) if isinstance(uni, dict) else []
-        risk_count = len(risk_flags) if isinstance(risk_flags, list) else 0
-        lines.append(
-            "  "
-            f"temporal_signal={_fmt_num(uni_temporal.get('temporal_signal_strength_score', np.nan), 2)}, "
-            f"stability_score={_fmt_num(uni_stationarity.get('stability_score', np.nan), 2)}, "
-            f"volatility_risk={_fmt_num(uni_volatility.get('volatility_risk_score', np.nan), 2)}, "
-            f"distribution={uni_distribution.get('distribution_classification', 'n/a')}, "
-            f"risk_flags={risk_count}"
-        )
-        lines.append(
-            "  "
-            f"cross_lag_effect={multi.get('cross_lag_effect', 'n/a')}, "
-            f"residual_dependency={_fmt_num(multi.get('residual_dependency', np.nan), 3)}, "
-            f"cv_improvement_multivariate={_fmt_num(multi.get('cv_improvement_multivariate', np.nan), 3)}, "
-            f"feature_utility_score={_fmt_num(multi.get('feature_utility_score', np.nan), 1)}, "
-            f"add_features_decision={multi.get('add_features_decision', 'n/a')}, "
-            f"decision_confidence={_fmt_num(multi.get('decision_confidence', np.nan), 3)}"
-        )
-    lines.append("")
+        risk_flags = uni.get("risk_flags", [])
+        if not isinstance(risk_flags, list):
+            risk_flags = [str(risk_flags)]
+
+        lines.append(f"TARGET: {target}")
+        lines.append("----------------------------------------")
+        for module_name in CORE_MODULES:
+            module_data = uni.get(module_name, {})
+            _render_module(lines, module_name, module_data)
+
+        lines.append("[MULTIVARIATE SIGNAL]")
+        mv = dict(multi) if isinstance(multi, dict) else {}
+        if "recommended_approach" not in mv:
+            mv["recommended_approach"] = mv.get("recommendation", "univariate")
+        for key in MULTIVARIATE_SIGNAL_KEYS + ["recommended_approach"]:
+            if key not in mv:
+                continue
+            val = mv[key]
+            if isinstance(val, (float, int, np.floating, np.integer)):
+                lines.append(f"- {key}: {_fmt_num(val)}")
+            else:
+                lines.append(f"- {key}: {val}")
+        lines.append("")
+
+        _append_final_output_fields(lines, uni, risk_flags)
+        lines.append("")
 
     lines.append("OVERALL BY GRANULARITY")
     for level, data in overall_by_level.items():
@@ -312,21 +482,21 @@ def build_expanded_human_readable_report(report: dict) -> str:
     lines.append(f"- total_groups={len(by_grain)}")
     shown = 0
     for grain_key, grain_data in by_grain.items():
-        if shown >= 12:
+        if shown >= 20:
             lines.append("- ... additional groups omitted for readability")
             break
         shown += 1
         if isinstance(grain_data, dict) and grain_data.get("status") == "skipped_insufficient_points":
             lines.append(f"- {grain_key}: skipped_insufficient_points (row_count={grain_data.get('row_count')})")
             continue
-
         lines.append(f"- {grain_key}: row_count={grain_data.get('row_count', 'n/a')}")
-        rec_map = grain_data.get("recommended_approach_by_target", {}) if isinstance(grain_data, dict) else {}
-        best_map = grain_data.get("best_granularity_by_target", {}) if isinstance(grain_data, dict) else {}
+        rec_map = grain_data.get("recommended_approach_by_target", {})
         for target in targets:
             rec = rec_map.get(target, "n/a") if isinstance(rec_map, dict) else "n/a"
-            bgr = best_map.get(target, "n/a") if isinstance(best_map, dict) else "n/a"
-            lines.append(f"  target={target}, recommendation={rec}, best_granularity={bgr}")
+            lines.append(
+                f"  target={target}, recommendation={rec}, "
+                f"best_granularity={best_grain.get(target, 'n/a')}"
+            )
     lines.append("")
 
     lines.append("SUMMARY")
@@ -337,6 +507,7 @@ def build_expanded_human_readable_report(report: dict) -> str:
         str(
             [
                 "mode",
+                "report_mode",
                 "config",
                 "overall_univariate",
                 "overall_multivariate",
@@ -348,5 +519,139 @@ def build_expanded_human_readable_report(report: dict) -> str:
             ]
         )
     )
-
     return "\n".join(lines)
+
+
+def build_expanded_summary_report(report: dict) -> str:
+    config = report.get("config", {}) if isinstance(report.get("config", {}), dict) else {}
+    targets = config.get("target_cols", [])
+    overall_uni = report.get("overall_univariate", {})
+    overall_multi = report.get("overall_multivariate", {})
+
+    lines: list[str] = []
+    lines.append("DATA CHARACTERIZATION REPORT")
+    lines.append("----------------------------------------")
+    lines.append(f"Mode: {report.get('mode', 'unknown')}")
+    lines.append(f"Targets: {targets}")
+    lines.append("")
+
+    for target in targets:
+        uni = overall_uni.get(target, {})
+        multi = overall_multi.get(target, {})
+        if not isinstance(uni, dict):
+            continue
+
+        temporal = uni.get("temporal", {})
+        distribution = uni.get("distribution", {})
+        volatility = uni.get("volatility", {})
+        structure = uni.get("structure", {})
+        granularity = uni.get("granularity", {})
+        stationarity = uni.get("stationarity", {})
+        risk_flags = uni.get("risk_flags", [])
+        if not isinstance(risk_flags, list):
+            risk_flags = [str(risk_flags)]
+
+        acf_vals = [
+            abs(float(temporal.get("acf_lag_1", np.nan))),
+            abs(float(temporal.get("acf_lag_2", np.nan))),
+            abs(float(temporal.get("acf_lag_3", np.nan))),
+        ]
+        acf_vals = [x for x in acf_vals if np.isfinite(x)]
+        avg_acf = float(np.mean(acf_vals)) if acf_vals else np.nan
+        signal = _signal_label(float(temporal.get("temporal_signal_strength_score", np.nan)))
+        seasonality = _seasonality_label(float(temporal.get("seasonality_strength_stl", np.nan)))
+        driver = _resolve_driver_signal(uni, multi=multi)
+        reason_items = _build_reason_block(uni, multi=multi)
+        recommendation = str(uni.get("modeling_recommendation", "")).strip()
+        action = recommendation.split(" because ", 1)[0].rstrip(".") if " because " in recommendation else recommendation
+
+        lines.append(f"Target: {target}")
+        lines.append(
+            f"Signal Strength: {signal} "
+            f"(temporal_signal_strength_score={_fmt_num(temporal.get('temporal_signal_strength_score', np.nan), 1)}, "
+            f"avg_acf_lag_1_3={_fmt_num(avg_acf, 3)})"
+        )
+        lines.append(
+            f"Variance: {volatility.get('volatility_classification', 'Unknown')} "
+            f"(volatility_risk_score={_fmt_num(volatility.get('volatility_risk_score', np.nan), 1)})"
+        )
+        lines.append(
+            f"Distribution: {distribution.get('distribution_classification', 'Unknown')} "
+            f"(skewness={_fmt_num(distribution.get('skewness', np.nan), 3)}, "
+            f"kurtosis={_fmt_num(distribution.get('kurtosis', np.nan), 3)})"
+        )
+        lines.append(
+            f"Concentration: {structure.get('structure_classification', 'Not provided')} "
+            f"(top5_revenue_share_pct={_fmt_num(structure.get('top5_revenue_share_pct', np.nan), 2)}%)"
+        )
+        lines.append(
+            f"Seasonality: {seasonality} "
+            f"(seasonality_strength_stl={_fmt_num(temporal.get('seasonality_strength_stl', np.nan), 3)}, "
+            f"seasonal_lag={_fmt_num(temporal.get('seasonal_lag', np.nan), 0)})"
+        )
+        signal_gain_ratio = float(granularity.get("signal_gain_ratio", np.nan))
+        signal_gain_pct = (signal_gain_ratio - 1.0) * 100.0 if np.isfinite(signal_gain_ratio) else np.nan
+        lines.append(
+            f"Granularity: optimal={granularity.get('optimal_granularity', 'original')} "
+            f"(signal_gain={_fmt_num(signal_gain_pct, 1)}%, "
+            f"noise_reduction_ratio={_fmt_num(granularity.get('noise_reduction_ratio', np.nan), 3)})"
+        )
+        lines.append(
+            f"Driver Signal: {driver['exogenous_signal_classification']} "
+            f"(exogenous_dominance_ratio={_fmt_num(driver['exogenous_dominance_ratio'], 2)}, "
+            f"exogenous_r2={_fmt_num(driver['exogenous_r2'], 2)}, "
+            f"ar_r2={_fmt_num(driver['ar_r2'], 2)})"
+        )
+        lines.append(f"CLASSIFICATION: {uni.get('classification', 'Unknown')}")
+        lines.append(f"FORECASTABILITY SCORE: {_fmt_num(uni.get('forecastability_score', np.nan), 0)}/100")
+        lines.append("RECOMMENDATION:")
+        lines.append(f"- {action if action else 'No recommendation generated'}")
+        lines.append("Reason:")
+        lines.append(",\n".join(reason_items))
+        lines.append("RISK FLAGS:")
+        if risk_flags:
+            for item in risk_flags:
+                lines.append(f"- {item}")
+        else:
+            lines.append("- None")
+        lines.append("EXECUTIVE SUMMARY:")
+        lines.append(
+            f"{uni.get('classification', 'Unknown')} with forecastability_score="
+            f"{_fmt_num(uni.get('forecastability_score', np.nan), 2)}."
+        )
+        lines.append("Key metrics:")
+        lines.append(
+            f"temporal_signal_strength_score={_fmt_num(temporal.get('temporal_signal_strength_score', np.nan), 3)},\n"
+            f"stability_score={_fmt_num(stationarity.get('stability_score', np.nan), 3)},\n"
+            f"model_improvement_ratio={_fmt_num(granularity.get('model_improvement_ratio', np.nan), 3)},\n"
+            f"exogenous_dominance_ratio={_fmt_num(driver['exogenous_dominance_ratio'], 2)},\n"
+            f"optimal_granularity={granularity.get('optimal_granularity', 'original')}."
+        )
+        lines.append("ENGINEERING DECISION RECOMMENDATION:")
+        lines.append(str(uni.get("engineering_decision_recommendation", "")))
+        _append_final_output_fields(lines, uni, risk_flags)
+        lines.append("")
+
+    lines.append("SUMMARY")
+    lines.append(str(report.get("summary", "")))
+    return "\n".join(lines)
+
+
+def build_technical_report(report: dict) -> str:
+    if _is_expanded_report(report):
+        return build_expanded_technical_report(report)
+    return build_univariate_technical_report(report)
+
+
+def build_summary_report(report: dict) -> str:
+    if _is_expanded_report(report):
+        return build_expanded_summary_report(report)
+    return build_univariate_summary_report(report)
+
+
+def build_human_readable_report(report: dict) -> str:
+    return build_univariate_technical_report(report)
+
+
+def build_expanded_human_readable_report(report: dict) -> str:
+    return build_expanded_technical_report(report)

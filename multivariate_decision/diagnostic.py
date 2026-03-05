@@ -71,6 +71,24 @@ def _safe_abs_corr(a: np.ndarray, b: np.ndarray) -> float:
     return abs(float(corr))
 
 
+def _safe_r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+    if len(y_true) != len(y_pred) or len(y_true) < 3:
+        return np.nan
+    mask = np.isfinite(y_true) & np.isfinite(y_pred)
+    if np.sum(mask) < 3:
+        return np.nan
+    yt = y_true[mask]
+    yp = y_pred[mask]
+    ss_tot = float(np.sum((yt - np.mean(yt)) ** 2))
+    if ss_tot <= 1e-12 or not np.isfinite(ss_tot):
+        return np.nan
+    ss_res = float(np.sum((yt - yp) ** 2))
+    r2 = 1.0 - (ss_res / ss_tot)
+    return float(np.clip(r2, -1.0, 1.0))
+
+
 def _effect_score(cross_lag_effect: str) -> float:
     mapping = {
         "weak": 0.20,
@@ -315,15 +333,77 @@ class MultivariateDiagnostic:
             "flags": flags,
         }
 
+    def exogenous_dominance_signal(self, target: pd.Series, exog: pd.DataFrame, ar_lag: int = 5) -> dict:
+        y, X = self._align_inputs(target, exog)
+        lag = max(1, int(ar_lag))
+
+        feature_count = int(X.shape[1])
+        exogenous_r2 = 0.0
+        ar_r2 = 0.0
+
+        if feature_count > 0 and len(y) >= 8:
+            Xv = X.values
+            yv = y.values
+            X1 = np.column_stack([np.ones(len(Xv)), Xv])
+            try:
+                beta, *_ = np.linalg.lstsq(X1, yv, rcond=None)
+                pred = X1 @ beta
+                exogenous_r2 = _safe_float(_safe_r2(yv, pred), default=0.0)
+            except Exception:
+                exogenous_r2 = 0.0
+        exogenous_r2 = float(np.clip(exogenous_r2, 0.0, 1.0))
+
+        yv = y.values
+        if len(yv) > lag + 6:
+            rows = []
+            yt = []
+            for i in range(lag, len(yv)):
+                past = yv[i - lag : i][::-1]
+                if np.all(np.isfinite(past)) and np.isfinite(yv[i]):
+                    rows.append(past)
+                    yt.append(yv[i])
+            if len(yt) >= 8:
+                X_ar = np.asarray(rows, dtype=float)
+                y_ar = np.asarray(yt, dtype=float)
+                X_ar1 = np.column_stack([np.ones(len(X_ar)), X_ar])
+                try:
+                    beta_ar, *_ = np.linalg.lstsq(X_ar1, y_ar, rcond=None)
+                    pred_ar = X_ar1 @ beta_ar
+                    ar_r2 = _safe_float(_safe_r2(y_ar, pred_ar), default=0.0)
+                except Exception:
+                    ar_r2 = 0.0
+        ar_r2 = float(np.clip(ar_r2, 0.0, 1.0))
+
+        ratio = float(exogenous_r2 / (ar_r2 + 1e-6))
+        if ratio >= 1.5:
+            exogenous_signal_classification = "Exogenous Dominated"
+        elif ratio >= 0.7:
+            exogenous_signal_classification = "Mixed Drivers"
+        else:
+            exogenous_signal_classification = "Autoregressive Dominated"
+
+        return {
+            "feature_count": float(feature_count),
+            "exogenous_r2": float(exogenous_r2),
+            "ar_r2": float(ar_r2),
+            "exogenous_dominance_ratio": float(ratio),
+            "exogenous_signal_classification": exogenous_signal_classification,
+        }
+
     def _recommendation(
         self,
         cross_lag_effect: str,
         residual_dependency: float,
         cv_improvement_multivariate: float,
         violation_score: float,
+        exogenous_signal_classification: str,
     ) -> str:
         if violation_score >= 0.65:
             return "univariate_with_exogenous"
+        if exogenous_signal_classification == "Exogenous Dominated":
+            if residual_dependency <= 0.25:
+                return "univariate_with_exogenous"
+            return "multivariate"
         if (
             cross_lag_effect in {"moderate", "strong"}
             and cv_improvement_multivariate >= 0.08
@@ -390,6 +470,11 @@ class MultivariateDiagnostic:
         feature_utility_score = _safe_float(output.get("feature_utility_score", np.nan), default=np.nan)
         add_features_decision = output.get("add_features_decision", "avoid_additional_features")
         decision_confidence = _safe_float(output.get("decision_confidence", np.nan), default=np.nan)
+        exogenous_r2 = _safe_float(output.get("exogenous_r2", np.nan), default=np.nan)
+        ar_r2 = _safe_float(output.get("ar_r2", np.nan), default=np.nan)
+        dominance_ratio = _safe_float(output.get("exogenous_dominance_ratio", np.nan), default=np.nan)
+        signal_class = output.get("exogenous_signal_classification", "Autoregressive Dominated")
+        feature_count = int(_safe_float(output.get("feature_count", 0.0), default=0.0))
 
         details = output.get("details", {})
         granger = details.get("granger", {}) if isinstance(details, dict) else {}
@@ -448,6 +533,11 @@ class MultivariateDiagnostic:
             f"{_fmt_num(feature_utility_score, 1)}/100 "
             f"(decision_confidence={_fmt_num(decision_confidence, 3)})"
         )
+        lines.append(
+            f"Driver Signal: {signal_class} "
+            f"(exogenous_dominance_ratio={_fmt_num(dominance_ratio, 3)}, "
+            f"exogenous_r2={_fmt_num(exogenous_r2, 3)}, ar_r2={_fmt_num(ar_r2, 3)}, feature_count={feature_count})"
+        )
         lines.append("")
         lines.append(f"RECOMMENDED APPROACH: {recommendation}")
         lines.append(f"ADD-FEATURES DECISION: {add_features_decision}")
@@ -476,6 +566,11 @@ class MultivariateDiagnostic:
         lines.append(f"- feature_utility_score: {_fmt_num(feature_utility_score, 6)}")
         lines.append(f"- add_features_decision: {add_features_decision}")
         lines.append(f"- decision_confidence: {_fmt_num(decision_confidence, 6)}")
+        lines.append(f"- exogenous_r2: {_fmt_num(exogenous_r2, 6)}")
+        lines.append(f"- ar_r2: {_fmt_num(ar_r2, 6)}")
+        lines.append(f"- exogenous_dominance_ratio: {_fmt_num(dominance_ratio, 6)}")
+        lines.append(f"- exogenous_signal_classification: {signal_class}")
+        lines.append(f"- feature_count: {feature_count}")
         lines.append(f"- recommendation: {recommendation}")
 
         return "\n".join(lines)
@@ -505,12 +600,14 @@ class MultivariateDiagnostic:
                 residual_dependency = self.residual_corr_test(target=target, exog=exog)
                 cv_gain = self.cv_comparison(target=target, exog=exog)
                 structural = self.structural_violation_check(target=target, exog=exog)
+                exogenous_signal = self.exogenous_dominance_signal(target=target, exog=exog, ar_lag=5)
 
         recommendation = self._recommendation(
             cross_lag_effect=granger["cross_lag_effect"],
             residual_dependency=residual_dependency,
             cv_improvement_multivariate=cv_gain,
             violation_score=structural["violation_score"],
+            exogenous_signal_classification=exogenous_signal["exogenous_signal_classification"],
         )
         feature_utility_score = self._feature_utility_score(
             cross_lag_effect=granger["cross_lag_effect"],
@@ -536,6 +633,15 @@ class MultivariateDiagnostic:
             "feature_utility_score": float(_safe_float(feature_utility_score, default=np.nan)),
             "add_features_decision": add_features_decision,
             "decision_confidence": float(_safe_float(decision_confidence, default=np.nan)),
+            "feature_count": float(_safe_float(exogenous_signal.get("feature_count", 0.0), default=0.0)),
+            "exogenous_r2": float(_safe_float(exogenous_signal.get("exogenous_r2", np.nan), default=np.nan)),
+            "ar_r2": float(_safe_float(exogenous_signal.get("ar_r2", np.nan), default=np.nan)),
+            "exogenous_dominance_ratio": float(
+                _safe_float(exogenous_signal.get("exogenous_dominance_ratio", np.nan), default=np.nan)
+            ),
+            "exogenous_signal_classification": exogenous_signal.get(
+                "exogenous_signal_classification", "Autoregressive Dominated"
+            ),
             "recommendation": recommendation,
             "details": {
                 "granger": granger,

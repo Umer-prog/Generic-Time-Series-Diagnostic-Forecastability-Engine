@@ -48,73 +48,93 @@ print("grain_cols:", grains if grains else "None")
 print("structural_cols:", structural_cols if structural_cols else "None")
 
 
-# 1) Univariate baseline (legacy-compatible)
-uni_report = run_ts_dfe(
+def print_multi_signal_metrics(title: str, multi_block: dict) -> None:
+    print(f"\n=== {title} ===")
+    print("cross_lag_effect:", multi_block.get("cross_lag_effect"))
+    print("residual_dependency:", multi_block.get("residual_dependency"))
+    print("cv_improvement_multivariate:", multi_block.get("cv_improvement_multivariate"))
+    print("feature_utility_score:", multi_block.get("feature_utility_score"))
+    print("decision_confidence:", multi_block.get("decision_confidence"))
+    print("exogenous_r2:", multi_block.get("exogenous_r2"))
+    print("ar_r2:", multi_block.get("ar_r2"))
+    print("exogenous_dominance_ratio:", multi_block.get("exogenous_dominance_ratio"))
+    print("exogenous_signal_classification:", multi_block.get("exogenous_signal_classification"))
+    print("recommendation:", multi_block.get("recommendation"))
+
+
+# 1) Univariate technical mode
+uni_technical = run_ts_dfe(
     df,
     date_col=date_col,
     target_col=target_col,
-    structural_cols=structural_cols
+    structural_cols=structural_cols,
+    report_mode="technical",
 )
-# print("\n=== UNIVARIATE BASELINE (HUMAN-READABLE) ===")
-# print(uni_report)  # TSDFEReport string rendering
-
-# # 2) Single-target + drivers (multivariate decision style)
-# driver_report = run_ts_dfe(
-#     df,
-#     date_col=date_col,
-#     target_cols=[target_col],
-#     feature_cols=features,   # resolved existing columns, not candidate list
-#     mode="multivariate",
-# )
-# print("\n=== MULTIVARIATE ENGINE (HUMAN-READABLE) ===")
-# print(driver_report)
-# print("\n=== OVERALL MULTIVARIATE DECISION (HUMAN-READABLE) ===")
-# overall_multi = driver_report["overall_multivariate"][target_col]
-# print(overall_multi)
-# print("\n=== OVERALL MULTIVARIATE DECISION METRICS ===")
-# print("cross_lag_effect:", overall_multi.get("cross_lag_effect"))
-# print("residual_dependency:", overall_multi.get("residual_dependency"))
-# print("cv_improvement_multivariate:", overall_multi.get("cv_improvement_multivariate"))
-# print("feature_utility_score:", overall_multi.get("feature_utility_score"))
-# print("add_features_decision:", overall_multi.get("add_features_decision"))
-# print("decision_confidence:", overall_multi.get("decision_confidence"))
-# print("recommendation:", overall_multi.get("recommendation"))
+print("\n=== UNIVARIATE | TECHNICAL MODE ===")
+print(uni_technical)
 
 
-# 2) Multivariate + grain-wise engine run
+# 1b) Univariate summary mode
+uni_summary = run_ts_dfe(
+    df,
+    date_col=date_col,
+    target_col=target_col,
+    structural_cols=structural_cols,
+    report_mode="summary",
+)
+print("\n=== UNIVARIATE | SUMMARY MODE ===")
+print(uni_summary)
+
+
+# 2) Multivariate technical mode (single target + features)
+multi_technical = run_ts_dfe(
+    df,
+    date_col=date_col,
+    target_cols=[target_col],  # single target
+    feature_cols=features,
+    mode="multivariate",
+    report_mode="technical",
+)
+print("\n=== MULTIVARIATE | TECHNICAL MODE ===")
+print(multi_technical)
+multi_technical_signal = multi_technical["overall_multivariate"][target_col]
+print_multi_signal_metrics("MULTIVARIATE SIGNAL METRICS | TECHNICAL", multi_technical_signal)
+
+
+# 2b) Multivariate summary mode (single target + features)
+multi_summary = run_ts_dfe(
+    df,
+    date_col=date_col,
+    target_cols=[target_col],
+    feature_cols=features,
+    mode="multivariate",
+    report_mode="summary",
+)
+print("\n=== MULTIVARIATE | SUMMARY MODE ===")
+print(multi_summary)
+multi_summary_signal = multi_summary["overall_multivariate"][target_col]
+print_multi_signal_metrics("MULTIVARIATE SIGNAL METRICS | SUMMARY", multi_summary_signal)
+
+
+# 3) Optional: multivariate + grain-wise technical run
 multi_grain_report = run_ts_dfe(
     df,
     date_col=date_col,
     target_cols=[target_col],
     feature_cols=features,
-    #grain_cols=grains,
+    grain_cols=grains,
     structural_cols=structural_cols,
     mode="multivariate",
+    report_mode="technical",
     min_points_per_group=30,
     max_grain_groups=12,
 )
-
-print("\n=== MULTIVARIATE + GRAIN-WISE ENGINE (HUMAN-READABLE) ===")
+print("\n=== MULTIVARIATE + GRAIN-WISE | TECHNICAL MODE ===")
 print(multi_grain_report)
-print("\n=== MULTIVARIATE + GRAIN-WISE ENGINE (RAW SNAPSHOT) ===")
-print("mode:", multi_grain_report["mode"])
-print("summary:", multi_grain_report["summary"])
-print("recommended_approach_by_target:", multi_grain_report["recommended_approach_by_target"])
-print("best_granularity_by_target:", multi_grain_report["best_granularity_by_target"])
-print("overall multivariate decision:", multi_grain_report["overall_multivariate"][target_col])
 print("grain groups:", len(multi_grain_report["by_grain"]))
 
-for grain_key, grain_data in list(multi_grain_report["by_grain"].items())[:5]:
-    if grain_data.get("status") == "skipped_insufficient_points":
-        print(f"{grain_key} -> skipped_insufficient_points")
-        continue
-    rec = grain_data["recommended_approach_by_target"][target_col]
-    score = grain_data["univariate"][target_col]["forecastability_score"]
-    opt_grain = grain_data["best_granularity_by_target"][target_col]
-    print(f"{grain_key} -> recommendation={rec}, score={score:.2f}, best_granularity={opt_grain}")
 
-
-# 3) Standalone MultivariateDiagnostic check on daily aggregated data
+# 4) Standalone MultivariateDiagnostic check
 print("\n=== STANDALONE MULTIVARIATE DIAGNOSTIC ===")
 diag = MultivariateDiagnostic(max_lag=5, cv_folds=3)
 
@@ -128,6 +148,4 @@ decision = diag.diagnose(
     exog=daily[features] if features else pd.DataFrame(index=daily.index),
 )
 print(decision)
-print("standalone feature_utility_score:", decision.get("feature_utility_score"))
-print("standalone add_features_decision:", decision.get("add_features_decision"))
-print("standalone decision_confidence:", decision.get("decision_confidence"))
+print_multi_signal_metrics("STANDALONE MULTIVARIATE SIGNAL METRICS", decision)

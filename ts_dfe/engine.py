@@ -15,7 +15,13 @@ try:
     from .distribution import analyze_distribution
     from .granularity import analyze_granularity
     from .integrity import analyze_integrity
-    from .readable import TSDFEReport, build_expanded_human_readable_report, build_human_readable_report
+    from .readable import (
+        TSDFEReport,
+        build_expanded_human_readable_report,
+        build_human_readable_report,
+        build_summary_report,
+        build_technical_report,
+    )
     from .stationarity import analyze_stationarity
     from .structure import analyze_structure
     from .temporal import analyze_temporal
@@ -26,7 +32,13 @@ except ImportError:
     from distribution import analyze_distribution
     from granularity import analyze_granularity
     from integrity import analyze_integrity
-    from readable import TSDFEReport, build_expanded_human_readable_report, build_human_readable_report
+    from readable import (
+        TSDFEReport,
+        build_expanded_human_readable_report,
+        build_human_readable_report,
+        build_summary_report,
+        build_technical_report,
+    )
     from stationarity import analyze_stationarity
     from structure import analyze_structure
     from temporal import analyze_temporal
@@ -59,6 +71,31 @@ def _resolve_mode(mode: str, target_cols: list[str], feature_cols: list[str]) ->
     if m == "auto":
         return "multivariate" if (len(target_cols) > 1 or len(feature_cols) > 0) else "univariate"
     return m
+
+
+def _resolve_report_mode(report_mode: str) -> str:
+    m = (report_mode or "technical").strip().lower()
+    if m not in {"technical", "summary"}:
+        raise ValueError("report_mode must be one of: technical, summary")
+    return m
+
+
+def _default_multivariate_signal(ar_r2: float = np.nan) -> dict:
+    ar = float(ar_r2) if np.isfinite(ar_r2) else 0.0
+    return {
+        "cross_lag_effect": "weak",
+        "residual_dependency": 0.0,
+        "cv_improvement_multivariate": 0.0,
+        "feature_utility_score": 0.0,
+        "add_features_decision": "avoid_additional_features",
+        "decision_confidence": 0.0,
+        "feature_count": 0.0,
+        "exogenous_r2": 0.0,
+        "ar_r2": float(np.clip(ar, 0.0, 1.0)),
+        "exogenous_dominance_ratio": 0.0,
+        "exogenous_signal_classification": "Autoregressive Dominated",
+        "recommendation": "univariate",
+    }
 
 
 def _grain_key(grain_cols: list[str], group_name: Any) -> str:
@@ -109,6 +146,8 @@ def _run_univariate_pipeline(
     target_col: str,
     structural_cols: list[str] | None = None,
     freq: str | None = None,
+    report_mode: str = "technical",
+    multivariate_signal: dict | None = None,
 ) -> TSDFEReport:
     structural_cols = structural_cols or []
 
@@ -152,8 +191,11 @@ def _run_univariate_pipeline(
     }
 
     synthesis = synthesize(modules)
+    signal = multivariate_signal or _default_multivariate_signal(ar_r2=temporal.get("ar5_r2", np.nan))
 
     result: dict[str, Any] = {
+        "mode": "univariate",
+        "report_mode": report_mode,
         "integrity": modules["integrity"],
         "distribution": modules["distribution"],
         "temporal": modules["temporal"],
@@ -161,6 +203,7 @@ def _run_univariate_pipeline(
         "volatility": modules["volatility"],
         "structure": modules["structure"],
         "granularity": modules["granularity"],
+        "multivariate_signal": signal,
         "classification": synthesis["classification"],
         "forecastability_score": synthesis["forecastability_score"],
         "modeling_recommendation": synthesis["modeling_recommendation"],
@@ -168,7 +211,10 @@ def _run_univariate_pipeline(
         "executive_summary": synthesis["executive_summary"],
         "engineering_decision_recommendation": synthesis["engineering_decision_recommendation"],
     }
-    result["human_readable_report"] = build_human_readable_report(result)
+    if report_mode == "summary":
+        result["human_readable_report"] = build_summary_report(result)
+    else:
+        result["human_readable_report"] = build_technical_report(result)
     return TSDFEReport(result)
 
 
@@ -180,21 +226,14 @@ def _run_multivariate_for_target(
     freq: str | None = None,
 ) -> dict:
     if not exog_cols:
-        return {
-            "cross_lag_effect": "weak",
-            "residual_dependency": 0.0,
-            "cv_improvement_multivariate": 0.0,
-            "recommendation": "univariate",
-        }
+        return _default_multivariate_signal()
 
     if MultivariateDiagnostic is None:
-        return {
-            "cross_lag_effect": "weak",
-            "residual_dependency": np.nan,
-            "cv_improvement_multivariate": np.nan,
-            "recommendation": "univariate_with_exogenous",
-            "error": "MultivariateDiagnostic module unavailable.",
-        }
+        out = _default_multivariate_signal()
+        out["recommendation"] = "univariate_with_exogenous"
+        out["feature_count"] = float(len(exog_cols))
+        out["error"] = "MultivariateDiagnostic module unavailable."
+        return out
 
     keep_cols = [date_col, target_col] + exog_cols
     keep_cols = [c for c in keep_cols if c in df.columns]
@@ -211,13 +250,10 @@ def _run_multivariate_for_target(
     grouped = work.groupby(date_col).agg(agg_map).sort_index()
 
     if target_col not in grouped.columns:
-        return {
-            "cross_lag_effect": "weak",
-            "residual_dependency": np.nan,
-            "cv_improvement_multivariate": np.nan,
-            "recommendation": "univariate",
-            "error": f"Target column '{target_col}' unavailable after aggregation.",
-        }
+        out = _default_multivariate_signal()
+        out["feature_count"] = float(len(exog_cols))
+        out["error"] = f"Target column '{target_col}' unavailable after aggregation."
+        return out
 
     bundle = build_regular_series(
         df=work[[date_col, target_col]].dropna(subset=[target_col]),
@@ -233,18 +269,16 @@ def _run_multivariate_for_target(
 
     exog_present = [c for c in exog_cols if c in aligned.columns]
     if not exog_present:
-        return {
-            "cross_lag_effect": "weak",
-            "residual_dependency": 0.0,
-            "cv_improvement_multivariate": 0.0,
-            "recommendation": "univariate",
-        }
+        return _default_multivariate_signal(ar_r2=np.nan)
 
     diagnostic = MultivariateDiagnostic()
-    return diagnostic.diagnose(
+    out = diagnostic.diagnose(
         target=aligned[target_col],
         exog=aligned[exog_present],
     )
+    if "feature_count" not in out:
+        out["feature_count"] = float(len(exog_present))
+    return out
 
 
 def _build_expanded_summary(result: dict) -> str:
@@ -275,6 +309,7 @@ def run_ts_dfe(
     grain_cols: list[str] | None = None,
     granularity_levels: list[str] | None = None,
     mode: str = "auto",
+    report_mode: str = "technical",
     min_points_per_group: int = 40,
     max_grain_groups: int | None = 50,
 ) -> dict:
@@ -293,6 +328,7 @@ def run_ts_dfe(
     granularity_levels = granularity_levels or list(DEFAULT_GRANULARITY_LEVELS)
     granularity_levels = [g for g in granularity_levels if g]
     resolved_mode = _resolve_mode(mode=mode, target_cols=target_cols_resolved, feature_cols=feature_cols)
+    resolved_report_mode = _resolve_report_mode(report_mode=report_mode)
 
     # Backward-compatible single-target path.
     legacy_single_target = (
@@ -308,10 +344,12 @@ def run_ts_dfe(
             target_col=target_cols_resolved[0],
             structural_cols=structural_cols,
             freq=freq,
+            report_mode=resolved_report_mode,
         )
 
     result: dict[str, Any] = {
         "mode": resolved_mode,
+        "report_mode": resolved_report_mode,
         "config": {
             "date_col": date_col,
             "target_cols": target_cols_resolved,
@@ -322,6 +360,7 @@ def run_ts_dfe(
             "min_points_per_group": int(min_points_per_group),
             "max_grain_groups": max_grain_groups,
             "freq": freq,
+            "report_mode": resolved_report_mode,
         },
         "overall_univariate": {},
         "overall_multivariate": {},
@@ -333,16 +372,6 @@ def run_ts_dfe(
 
     # Overall univariate and multivariate diagnostics.
     for target in target_cols_resolved:
-        uni_report = _run_univariate_pipeline(
-            df=df,
-            date_col=date_col,
-            target_col=target,
-            structural_cols=structural_cols,
-            freq=freq,
-        )
-        result["overall_univariate"][target] = dict(uni_report)
-        result["best_granularity_by_target"][target] = uni_report["granularity"]["optimal_granularity"]
-
         exog_cols = []
         for col in target_cols_resolved + feature_cols:
             if col != target and col in df.columns and col not in exog_cols:
@@ -357,12 +386,19 @@ def run_ts_dfe(
                 freq=freq,
             )
         else:
-            multi_report = {
-                "cross_lag_effect": "weak",
-                "residual_dependency": 0.0,
-                "cv_improvement_multivariate": 0.0,
-                "recommendation": "univariate",
-            }
+            multi_report = _default_multivariate_signal()
+
+        uni_report = _run_univariate_pipeline(
+            df=df,
+            date_col=date_col,
+            target_col=target,
+            structural_cols=structural_cols,
+            freq=freq,
+            report_mode=resolved_report_mode,
+            multivariate_signal=multi_report,
+        )
+        result["overall_univariate"][target] = dict(uni_report)
+        result["best_granularity_by_target"][target] = uni_report["granularity"]["optimal_granularity"]
 
         result["overall_multivariate"][target] = multi_report
         result["recommended_approach_by_target"][target] = multi_report.get("recommendation", "univariate")
@@ -387,6 +423,7 @@ def run_ts_dfe(
                 target_col=target,
                 structural_cols=[],
                 freq=(None if level == "original" else level),
+                report_mode=resolved_report_mode,
             )
             level_entry[target] = {
                 "classification": level_report["classification"],
@@ -420,16 +457,6 @@ def run_ts_dfe(
             }
 
             for target in target_cols_resolved:
-                uni_report = _run_univariate_pipeline(
-                    df=gdf,
-                    date_col=date_col,
-                    target_col=target,
-                    structural_cols=structural_cols,
-                    freq=freq,
-                )
-                grain_entry["univariate"][target] = dict(uni_report)
-                grain_entry["best_granularity_by_target"][target] = uni_report["granularity"]["optimal_granularity"]
-
                 exog_cols = []
                 for col in target_cols_resolved + feature_cols:
                     if col != target and col in gdf.columns and col not in exog_cols:
@@ -443,12 +470,19 @@ def run_ts_dfe(
                         freq=freq,
                     )
                 else:
-                    multi_report = {
-                        "cross_lag_effect": "weak",
-                        "residual_dependency": 0.0,
-                        "cv_improvement_multivariate": 0.0,
-                        "recommendation": "univariate",
-                    }
+                    multi_report = _default_multivariate_signal()
+
+                uni_report = _run_univariate_pipeline(
+                    df=gdf,
+                    date_col=date_col,
+                    target_col=target,
+                    structural_cols=structural_cols,
+                    freq=freq,
+                    report_mode=resolved_report_mode,
+                    multivariate_signal=multi_report,
+                )
+                grain_entry["univariate"][target] = dict(uni_report)
+                grain_entry["best_granularity_by_target"][target] = uni_report["granularity"]["optimal_granularity"]
                 grain_entry["multivariate"][target] = multi_report
                 grain_entry["recommended_approach_by_target"][target] = multi_report.get("recommendation", "univariate")
 
@@ -471,6 +505,7 @@ def run_ts_dfe(
                         target_col=target,
                         structural_cols=[],
                         freq=(None if level == "original" else level),
+                        report_mode=resolved_report_mode,
                     )
                     level_entry[target] = {
                         "classification": level_report["classification"],
@@ -482,5 +517,8 @@ def run_ts_dfe(
             result["by_grain"][key] = grain_entry
 
     result["summary"] = _build_expanded_summary(result)
-    result["human_readable_report"] = build_expanded_human_readable_report(result)
+    if resolved_report_mode == "summary":
+        result["human_readable_report"] = build_summary_report(result)
+    else:
+        result["human_readable_report"] = build_technical_report(result)
     return TSDFEReport(result)

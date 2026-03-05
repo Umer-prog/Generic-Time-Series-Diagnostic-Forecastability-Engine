@@ -194,3 +194,71 @@ def test_synthesis_and_readable_report_include_metric_grounded_recommendation() 
     readable = build_human_readable_report(report)
     assert "EXECUTIVE SUMMARY:" in readable
     assert "ENGINEERING DECISION RECOMMENDATION:" in readable
+
+
+def test_summary_report_mode_includes_driver_signal_and_final_fields() -> None:
+    df = _seasonal_df(n=150, seed=31)
+    report = run_ts_dfe(
+        df,
+        date_col="date",
+        target_col="sales",
+        structural_cols=["customer"],
+        report_mode="summary",
+    )
+    text = str(report)
+
+    assert report["report_mode"] == "summary"
+    assert text == report["human_readable_report"]
+    assert "DATA CHARACTERIZATION REPORT" in text
+    assert "Driver Signal:" in text
+    assert "[FINAL OUTPUT FIELDS]" in text
+
+
+def test_multivariate_exogenous_dominance_fields_and_technical_section() -> None:
+    n = 220
+    rng = np.random.default_rng(777)
+    idx = pd.date_range("2025-01-01", periods=n, freq="D")
+
+    feat_1 = rng.normal(0.0, 1.0, size=n)
+    feat_2 = rng.normal(0.0, 1.0, size=n)
+    noise = rng.normal(0.0, 0.25, size=n)
+    target = (5.0 * feat_1) + (3.5 * feat_2) + noise
+
+    df = pd.DataFrame(
+        {
+            "date": idx,
+            "sales": target,
+            "feat_1": feat_1,
+            "feat_2": feat_2,
+            "customer": rng.choice(["A", "B", "C"], size=n),
+        }
+    )
+
+    report = run_ts_dfe(
+        df,
+        date_col="date",
+        target_cols=["sales"],
+        feature_cols=["feat_1", "feat_2"],
+        structural_cols=["customer"],
+        mode="multivariate",
+        report_mode="technical",
+    )
+
+    multi = report["overall_multivariate"]["sales"]
+    for key in {
+        "exogenous_r2",
+        "ar_r2",
+        "exogenous_dominance_ratio",
+        "exogenous_signal_classification",
+    }:
+        assert key in multi
+    assert multi["exogenous_signal_classification"] in {
+        "Exogenous Dominated",
+        "Mixed Drivers",
+        "Autoregressive Dominated",
+    }
+
+    text = str(report)
+    assert "=== TECHNICAL DIAGNOSTIC REPORT ===" in text
+    assert "[MULTIVARIATE SIGNAL]" in text
+    assert "exogenous_dominance_ratio" in text
