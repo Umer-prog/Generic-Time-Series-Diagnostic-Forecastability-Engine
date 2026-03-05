@@ -256,6 +256,32 @@ def _model_starting_point(
     }
 
 
+def _effective_observations_monthly(report: dict, multi: dict | None = None) -> int | None:
+    m = multi if isinstance(multi, dict) else report.get("multivariate_signal", {})
+    if isinstance(m, dict):
+        ctx = m.get("data_context", {})
+        if isinstance(ctx, dict):
+            val = ctx.get("effective_observations_monthly", None)
+            try:
+                iv = int(val)
+                if iv >= 0:
+                    return iv
+            except Exception:
+                pass
+
+    gran = report.get("granularity", {})
+    if isinstance(gran, dict):
+        monthly = gran.get("monthly", {})
+        if isinstance(monthly, dict):
+            try:
+                iv = int(float(monthly.get("count", np.nan)))
+                if iv >= 0:
+                    return iv
+            except Exception:
+                pass
+    return None
+
+
 def _append_final_output_fields(
     lines: list[str],
     report: dict,
@@ -423,6 +449,7 @@ def build_univariate_summary_report(report: dict) -> str:
     signal_gain_pct = (signal_gain_ratio - 1.0) * 100.0 if np.isfinite(signal_gain_ratio) else np.nan
 
     driver = _resolve_driver_signal(report)
+    multi_signal = report.get("multivariate_signal", {})
     reason_items = _build_reason_block(report)
     driver_classification = driver["exogenous_signal_classification"]
     driver_note = _driver_signal_note(driver_classification)
@@ -438,6 +465,7 @@ def build_univariate_summary_report(report: dict) -> str:
     )
     predictability = _predictability_label(noise_signal_ratio)
     structure_text = _structure_summary_text(structure)
+    effective_obs_monthly = _effective_observations_monthly(report, multi=multi_signal)
     start = _model_starting_point(
         driver_classification=driver_classification,
         temporal_signal_score=temporal_score,
@@ -476,11 +504,13 @@ def build_univariate_summary_report(report: dict) -> str:
         f"(signal_gain={_fmt_num(signal_gain_pct, 1)}%, "
         f"noise_reduction_ratio={_fmt_num(granularity.get('noise_reduction_ratio', np.nan), 3)})"
     )
+    if effective_obs_monthly is not None:
+        lines.append(f"Effective observations (monthly): {effective_obs_monthly}")
     lines.append(
         f"Driver Signal: {driver_classification} "
         f"(exogenous_dominance_ratio={_fmt_num(driver['exogenous_dominance_ratio'], 2)}, "
-        f"exogenous_r2={_fmt_num(driver['exogenous_r2'], 2)}, "
-        f"ar_r2={_fmt_num(driver['ar_r2'], 2)})"
+        f"exogenous_r2={_fmt_num(driver['exogenous_r2'], 3)}, "
+        f"ar_r2={_fmt_num(driver['ar_r2'], 3)})"
     )
     lines.append(f"-> {driver_note}")
     lines.append("")
@@ -601,6 +631,13 @@ def build_expanded_technical_report(report: dict) -> str:
                 lines.append(f"- {key}: {_fmt_num(val)}")
             else:
                 lines.append(f"- {key}: {val}")
+        data_context = mv.get("data_context", {})
+        if isinstance(data_context, dict) and data_context:
+            lines.append("- data_context.rows: " + str(data_context.get("rows", "n/a")))
+            lines.append("- data_context.frequency: " + str(data_context.get("frequency", "unknown")))
+            lines.append("- data_context.aggregation: " + str(data_context.get("aggregation", "date groupby")))
+            lines.append("- data_context.target: " + str(data_context.get("target", "target")))
+            lines.append("- data_context.features: " + str(data_context.get("features", [])))
         lines.append("")
 
         _append_final_output_fields(lines, uni, risk_flags)
@@ -719,6 +756,7 @@ def build_expanded_summary_report(report: dict) -> str:
         )
         predictability = _predictability_label(noise_signal_ratio)
         structure_text = _structure_summary_text(structure)
+        effective_obs_monthly = _effective_observations_monthly(uni, multi=multi)
 
         lines.append(f"Target: {target}")
         lines.append(
@@ -751,11 +789,13 @@ def build_expanded_summary_report(report: dict) -> str:
             f"(signal_gain={_fmt_num(signal_gain_pct, 1)}%, "
             f"noise_reduction_ratio={_fmt_num(granularity.get('noise_reduction_ratio', np.nan), 3)})"
         )
+        if effective_obs_monthly is not None:
+            lines.append(f"Effective observations (monthly): {effective_obs_monthly}")
         lines.append(
             f"Driver Signal: {driver_classification} "
             f"(exogenous_dominance_ratio={_fmt_num(driver['exogenous_dominance_ratio'], 2)}, "
-            f"exogenous_r2={_fmt_num(driver['exogenous_r2'], 2)}, "
-            f"ar_r2={_fmt_num(driver['ar_r2'], 2)})"
+            f"exogenous_r2={_fmt_num(driver['exogenous_r2'], 3)}, "
+            f"ar_r2={_fmt_num(driver['ar_r2'], 3)})"
         )
         lines.append(f"-> {driver_note}")
         lines.append(f"CLASSIFICATION: {uni.get('classification', 'Unknown')}")

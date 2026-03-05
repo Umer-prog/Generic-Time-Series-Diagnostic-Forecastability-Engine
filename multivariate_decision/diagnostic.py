@@ -392,25 +392,14 @@ class MultivariateDiagnostic:
 
     def _recommendation(
         self,
-        cross_lag_effect: str,
-        residual_dependency: float,
+        exogenous_r2: float,
+        ar_r2: float,
         cv_improvement_multivariate: float,
-        violation_score: float,
-        exogenous_signal_classification: str,
+        cross_lag_effect: str,
     ) -> str:
-        if violation_score >= 0.65:
-            return "univariate_with_exogenous"
-        if exogenous_signal_classification == "Exogenous Dominated":
-            if residual_dependency <= 0.25:
-                return "univariate_with_exogenous"
+        if (exogenous_r2 > ar_r2) and (cv_improvement_multivariate > 0):
             return "multivariate"
-        if (
-            cross_lag_effect in {"moderate", "strong"}
-            and cv_improvement_multivariate >= 0.08
-            and residual_dependency <= 0.20
-        ):
-            return "multivariate"
-        if cv_improvement_multivariate > 0 or cross_lag_effect in {"moderate", "strong"}:
+        if str(cross_lag_effect).lower() == "strong":
             return "univariate_with_exogenous"
         return "univariate"
 
@@ -475,6 +464,9 @@ class MultivariateDiagnostic:
         dominance_ratio = _safe_float(output.get("exogenous_dominance_ratio", np.nan), default=np.nan)
         signal_class = output.get("exogenous_signal_classification", "Autoregressive Dominated")
         feature_count = int(_safe_float(output.get("feature_count", 0.0), default=0.0))
+        data_context = output.get("data_context", {})
+        if not isinstance(data_context, dict):
+            data_context = {}
 
         details = output.get("details", {})
         granger = details.get("granger", {}) if isinstance(details, dict) else {}
@@ -512,6 +504,21 @@ class MultivariateDiagnostic:
         lines: list[str] = []
         lines.append("MULTIVARIATE DIAGNOSTIC REPORT")
         lines.append("----------------------------------------")
+        if data_context:
+            lines.append("MULTIVARIATE DATA CONTEXT")
+            lines.append("--------------------------------")
+            if "raw_rows" in data_context:
+                lines.append(f"raw_rows: {data_context.get('raw_rows', 'n/a')}")
+            lines.append(f"rows: {data_context.get('rows', 'n/a')}")
+            lines.append(f"frequency: {data_context.get('frequency', 'unknown')}")
+            lines.append(f"aggregation: {data_context.get('aggregation', 'date groupby')}")
+            lines.append(f"target: {data_context.get('target', 'target')}")
+            lines.append(f"features: {data_context.get('features', [])}")
+            lines.append(
+                f"Effective observations (monthly): "
+                f"{data_context.get('effective_observations_monthly', 'n/a')}"
+            )
+            lines.append("")
         lines.append(
             f"Cross-Lag Effect: {cross_lag_effect.title()} "
             f"(significant_feature_ratio={_fmt_num(sig_ratio, 3)})"
@@ -571,6 +578,16 @@ class MultivariateDiagnostic:
         lines.append(f"- exogenous_dominance_ratio: {_fmt_num(dominance_ratio, 6)}")
         lines.append(f"- exogenous_signal_classification: {signal_class}")
         lines.append(f"- feature_count: {feature_count}")
+        if data_context:
+            if "raw_rows" in data_context:
+                lines.append(f"- data_context.raw_rows: {data_context.get('raw_rows', 'n/a')}")
+            lines.append(f"- data_context.rows: {data_context.get('rows', 'n/a')}")
+            lines.append(f"- data_context.frequency: {data_context.get('frequency', 'unknown')}")
+            lines.append(f"- data_context.aggregation: {data_context.get('aggregation', 'date groupby')}")
+            lines.append(
+                f"- data_context.effective_observations_monthly: "
+                f"{data_context.get('effective_observations_monthly', 'n/a')}"
+            )
         lines.append(f"- recommendation: {recommendation}")
 
         return "\n".join(lines)
@@ -581,6 +598,7 @@ class MultivariateDiagnostic:
         exog: pd.DataFrame,
         max_lag: int | None = None,
         significance: float = 0.05,
+        data_context: dict | None = None,
     ) -> dict:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -603,11 +621,10 @@ class MultivariateDiagnostic:
                 exogenous_signal = self.exogenous_dominance_signal(target=target, exog=exog, ar_lag=5)
 
         recommendation = self._recommendation(
-            cross_lag_effect=granger["cross_lag_effect"],
-            residual_dependency=residual_dependency,
+            exogenous_r2=exogenous_signal.get("exogenous_r2", 0.0),
+            ar_r2=exogenous_signal.get("ar_r2", 0.0),
             cv_improvement_multivariate=cv_gain,
-            violation_score=structural["violation_score"],
-            exogenous_signal_classification=exogenous_signal["exogenous_signal_classification"],
+            cross_lag_effect=granger["cross_lag_effect"],
         )
         feature_utility_score = self._feature_utility_score(
             cross_lag_effect=granger["cross_lag_effect"],
@@ -643,6 +660,7 @@ class MultivariateDiagnostic:
                 "exogenous_signal_classification", "Autoregressive Dominated"
             ),
             "recommendation": recommendation,
+            "data_context": data_context if isinstance(data_context, dict) else {},
             "details": {
                 "granger": granger,
                 "structural_violation": structural,

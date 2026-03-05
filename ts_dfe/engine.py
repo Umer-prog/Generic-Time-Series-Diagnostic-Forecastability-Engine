@@ -98,6 +98,99 @@ def _default_multivariate_signal(ar_r2: float = np.nan) -> dict:
     }
 
 
+def _infer_frequency_label(index: pd.DatetimeIndex) -> str:
+    idx = pd.DatetimeIndex(index).sort_values().unique()
+    if len(idx) < 2:
+        return "unknown"
+
+    inferred = pd.infer_freq(idx)
+    if inferred:
+        alias = str(inferred).upper()
+        if alias.endswith("D"):
+            return "daily"
+        if alias.startswith("W"):
+            return "weekly"
+        if alias in {"M", "ME"}:
+            return "monthly"
+        if alias in {"Q", "QE"}:
+            return "quarterly"
+        if alias in {"A", "Y", "YE"}:
+            return "yearly"
+        if alias.endswith("H"):
+            return "hourly"
+        return alias.lower()
+
+    deltas = idx.to_series().diff().dropna().dt.total_seconds().values
+    if len(deltas) == 0:
+        return "unknown"
+    med = float(np.median(deltas))
+    if not np.isfinite(med):
+        return "unknown"
+    if abs(med - 86400.0) < 1.0:
+        return "daily"
+    if abs(med - (7.0 * 86400.0)) < 1.0:
+        return "weekly"
+    if 28.0 * 86400.0 <= med <= 31.0 * 86400.0:
+        return "monthly"
+    if abs(med - 3600.0) < 1.0:
+        return "hourly"
+    return f"{int(round(med))}s"
+
+
+def _prepare_multivariate_timeseries(
+    df: pd.DataFrame,
+    date_col: str,
+    target_col: str,
+    feature_cols: list[str],
+) -> tuple[pd.DataFrame, dict]:
+    feature_cols = [c for c in feature_cols if c in df.columns and c != target_col]
+    keep_cols = [date_col, target_col] + feature_cols
+    keep_cols = [c for c in keep_cols if c in df.columns]
+    work = df[keep_cols].copy()
+    work[date_col] = pd.to_datetime(work[date_col], errors="coerce")
+    work = work.dropna(subset=[date_col])
+
+    if target_col in work.columns:
+        work[target_col] = pd.to_numeric(work[target_col], errors="coerce")
+    for col in feature_cols:
+        if col in work.columns:
+            work[col] = pd.to_numeric(work[col], errors="coerce")
+
+    # Base-frequency preparation shared across engine and standalone diagnostics.
+    agg_map: dict[str, Any] = {target_col: "sum"}
+    for col in feature_cols:
+        if col in work.columns:
+            agg_map[col] = "mean"
+
+    ts = work.groupby(date_col).agg(agg_map).sort_index()
+    ts.index = pd.to_datetime(ts.index, errors="coerce")
+    ts = ts[~ts.index.isna()]
+    if target_col in ts.columns:
+        ts = ts.dropna(subset=[target_col])
+
+    try:
+        monthly_effective = int(
+            ts[target_col]
+            .resample("ME")
+            .sum(min_count=1)
+            .dropna()
+            .shape[0]
+        )
+    except Exception:
+        monthly_effective = 0
+
+    context = {
+        "raw_rows": int(len(df)),
+        "rows": int(len(ts)),
+        "frequency": _infer_frequency_label(ts.index),
+        "aggregation": "date groupby",
+        "target": target_col,
+        "features": [c for c in feature_cols if c in ts.columns],
+        "effective_observations_monthly": monthly_effective,
+    }
+    return ts, context
+
+
 def _grain_key(grain_cols: list[str], group_name: Any) -> str:
     if not grain_cols:
         return "all"
@@ -225,59 +318,47 @@ def _run_multivariate_for_target(
     exog_cols: list[str],
     freq: str | None = None,
 ) -> dict:
-    if not exog_cols:
-        return _default_multivariate_signal()
+    ts, data_context = _prepare_multivariate_timeseries(
+        df=df,
+        date_col=date_col,
+        target_col=target_col,
+        feature_cols=exog_cols,
+    )
+
+    if target_col not in ts.columns:
+        out = _default_multivariate_signal()
+        out["feature_count"] = float(len(exog_cols))
+        out["data_context"] = data_context
+        out["error"] = f"Target column '{target_col}' unavailable after aggregation."
+        return out
+
+    exog_present = [c for c in exog_cols if c in ts.columns]
+    data_context["features"] = exog_present
+
+    if not exog_present:
+        out = _default_multivariate_signal()
+        out["ar_r2"] = float(0.0)
+        out["data_context"] = data_context
+        return out
 
     if MultivariateDiagnostic is None:
         out = _default_multivariate_signal()
         out["recommendation"] = "univariate_with_exogenous"
-        out["feature_count"] = float(len(exog_cols))
+        out["feature_count"] = float(len(exog_present))
+        out["data_context"] = data_context
         out["error"] = "MultivariateDiagnostic module unavailable."
         return out
 
-    keep_cols = [date_col, target_col] + exog_cols
-    keep_cols = [c for c in keep_cols if c in df.columns]
-    work = df[keep_cols].copy()
-    work[date_col] = pd.to_datetime(work[date_col], errors="coerce")
-    work = work.dropna(subset=[date_col])
-
-    for col in [target_col] + exog_cols:
-        if col in work.columns:
-            work[col] = pd.to_numeric(work[col], errors="coerce")
-
-    agg_map = {target_col: "sum"}
-    agg_map.update({c: "mean" for c in exog_cols if c in work.columns})
-    grouped = work.groupby(date_col).agg(agg_map).sort_index()
-
-    if target_col not in grouped.columns:
-        out = _default_multivariate_signal()
-        out["feature_count"] = float(len(exog_cols))
-        out["error"] = f"Target column '{target_col}' unavailable after aggregation."
-        return out
-
-    bundle = build_regular_series(
-        df=work[[date_col, target_col]].dropna(subset=[target_col]),
-        date_col=date_col,
-        target_col=target_col,
-        freq=freq,
-        agg="sum",
-    )
-    idx = bundle.series.index
-    aligned = grouped.reindex(idx)
-    aligned[target_col] = bundle.series.values
-    aligned = aligned.interpolate(method="time").ffill().bfill()
-
-    exog_present = [c for c in exog_cols if c in aligned.columns]
-    if not exog_present:
-        return _default_multivariate_signal(ar_r2=np.nan)
-
     diagnostic = MultivariateDiagnostic()
     out = diagnostic.diagnose(
-        target=aligned[target_col],
-        exog=aligned[exog_present],
+        target=ts[target_col],
+        exog=ts[exog_present],
+        data_context=data_context,
     )
     if "feature_count" not in out:
         out["feature_count"] = float(len(exog_present))
+    if "data_context" not in out:
+        out["data_context"] = data_context
     return out
 
 

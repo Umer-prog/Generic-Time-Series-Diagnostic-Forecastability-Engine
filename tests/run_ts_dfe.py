@@ -7,7 +7,7 @@ import pandas as pd
 sys.path.insert(0, r"D:/OneDrive - Global Data 365/Analytics Engine templates/tests/data tests")
 
 from multivariate_decision import MultivariateDiagnostic
-from ts_dfe.engine import run_ts_dfe
+from ts_dfe.engine import _prepare_multivariate_timeseries, run_ts_dfe
 
 
 DATA_PATH = Path("sales_actual.xlsx")
@@ -140,14 +140,17 @@ print_multi_signal_metrics("MULTIVARIATE SIGNAL METRICS | SUMMARY", multi_summar
 print("\n=== STANDALONE MULTIVARIATE DIAGNOSTIC ===")
 diag = MultivariateDiagnostic(max_lag=5, cv_folds=3)
 
-agg_map = {target_col: "sum"}
-for col in features:
-    agg_map[col] = "mean"
-daily = df.groupby(date_col).agg(agg_map).sort_index()
+daily, data_context = _prepare_multivariate_timeseries(
+    df=df,
+    date_col=date_col,
+    target_col=target_col,
+    feature_cols=features,
+)
 
 decision = diag.diagnose(
     target=daily[target_col],
     exog=daily[features] if features else pd.DataFrame(index=daily.index),
+    data_context=data_context,
 )
 print(decision)
 print_multi_signal_metrics("STANDALONE MULTIVARIATE SIGNAL METRICS", decision)
