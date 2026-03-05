@@ -153,11 +153,122 @@ def _build_reason_block(report: dict, multi: dict | None = None) -> list[str]:
     return reason_items
 
 
-def _append_final_output_fields(lines: list[str], report: dict, risk_flags: list[str]) -> None:
+def _noise_signal_ratio(mean_value: float, naive_mae_value: float) -> float:
+    m = float(mean_value)
+    n = float(naive_mae_value)
+    if not np.isfinite(m) or not np.isfinite(n):
+        return np.nan
+    denom = abs(m)
+    if denom <= 1e-12:
+        return np.nan
+    return float(n / denom)
+
+
+def _predictability_label(noise_signal_ratio: float) -> str:
+    if not np.isfinite(noise_signal_ratio):
+        return "Unknown"
+    if noise_signal_ratio > 1.0:
+        return "Very noisy"
+    if noise_signal_ratio >= 0.5:
+        return "Moderate noise"
+    return "Strong signal"
+
+
+def _structure_summary_text(structure: dict) -> str:
+    enabled = float(structure.get("structure_enabled", 0.0))
+    if not np.isfinite(enabled) or enabled <= 0.5:
+        return "Structure diagnostics disabled (no entity columns provided)"
+    return (
+        f"{structure.get('structure_classification', 'Not provided')} "
+        f"(top5_revenue_share_pct={_fmt_num(structure.get('top5_revenue_share_pct', np.nan), 2)}%)"
+    )
+
+
+def _driver_signal_note(driver_classification: str) -> str:
+    if driver_classification == "Exogenous Dominated":
+        return "Exogenous drivers are primary predictive signal"
+    if driver_classification == "Mixed Drivers":
+        return "Both autoregressive and exogenous effects are relevant"
+    return "Exogenous drivers provide limited predictive power"
+
+
+def _driver_consistent_recommendation(
+    driver_classification: str,
+    temporal_signal_score: float,
+    volatility_classification: str,
+) -> str:
+    vol = str(volatility_classification)
+    if driver_classification == "Exogenous Dominated":
+        if vol == "Event volatility":
+            return "Use event-driven regression models with external drivers"
+        return "Use regression / feature-based models"
+    if driver_classification == "Mixed Drivers":
+        return "Use hybrid autoregressive + feature models"
+
+    # Autoregressive Dominated
+    if np.isfinite(temporal_signal_score) and temporal_signal_score >= 35.0:
+        return "Use autoregressive models with robust baseline fallback"
+    return "Use robust baseline models with event detection"
+
+
+def _model_starting_point(
+    driver_classification: str,
+    temporal_signal_score: float,
+    volatility_classification: str,
+    optimal_granularity: str,
+    seasonality_strength: float,
+) -> dict[str, str]:
+    vol = str(volatility_classification)
+    gran = str(optimal_granularity or "original")
+    gran_title = gran.capitalize()
+
+    if driver_classification == "Exogenous Dominated":
+        primary_model = "Event-driven regression" if vol == "Event volatility" else "Feature-based regression"
+        feature_usage = "Required (high driver signal)"
+    elif driver_classification == "Mixed Drivers":
+        primary_model = "Hybrid autoregressive + regression model"
+        feature_usage = "Recommended (mixed driver signal)"
+    else:
+        if np.isfinite(temporal_signal_score) and temporal_signal_score >= 35.0:
+            primary_model = "Autoregressive model (ARIMA/ETS)"
+        else:
+            primary_model = "Robust regression or baseline model"
+        feature_usage = "Optional (low driver signal)"
+
+    if np.isfinite(seasonality_strength) and seasonality_strength >= 0.2:
+        baseline_model = "Seasonal naive"
+    else:
+        baseline_model = "Naive"
+
+    if vol in {"Event volatility", "Heteroskedastic", "Clustered volatility"}:
+        loss_function = "Quantile or Huber"
+    elif vol == "Homoskedastic":
+        loss_function = "MAE"
+    else:
+        loss_function = "Quantile or Huber"
+
+    return {
+        "primary_model": primary_model,
+        "baseline_model": baseline_model,
+        "training_granularity": gran_title,
+        "loss_function": loss_function,
+        "feature_usage": feature_usage,
+    }
+
+
+def _append_final_output_fields(
+    lines: list[str],
+    report: dict,
+    risk_flags: list[str],
+    modeling_recommendation_override: str | None = None,
+) -> None:
     lines.append("[FINAL OUTPUT FIELDS]")
     lines.append(f"- classification: {report.get('classification', 'Unknown')}")
     lines.append(f"- forecastability_score: {_fmt_num(report.get('forecastability_score', np.nan), 3)}")
-    lines.append(f"- modeling_recommendation: {report.get('modeling_recommendation', '')}")
+    model_reco = modeling_recommendation_override
+    if model_reco is None:
+        model_reco = str(report.get("modeling_recommendation", ""))
+    lines.append(f"- modeling_recommendation: {model_reco}")
     lines.append(f"- risk_flags_count: {len(risk_flags)}")
     lines.append(f"- executive_summary: {report.get('executive_summary', '')}")
     lines.append(
@@ -313,11 +424,27 @@ def build_univariate_summary_report(report: dict) -> str:
 
     driver = _resolve_driver_signal(report)
     reason_items = _build_reason_block(report)
-
-    recommendation = str(report.get("modeling_recommendation", "")).strip()
-    action = recommendation
-    if " because " in recommendation:
-        action = recommendation.split(" because ", 1)[0].rstrip(".")
+    driver_classification = driver["exogenous_signal_classification"]
+    driver_note = _driver_signal_note(driver_classification)
+    action = _driver_consistent_recommendation(
+        driver_classification=driver_classification,
+        temporal_signal_score=temporal_score,
+        volatility_classification=str(volatility.get("volatility_classification", "Unknown")),
+    )
+    recommendation_full = f"{action} because {', '.join(reason_items)}."
+    noise_signal_ratio = _noise_signal_ratio(
+        mean_value=float(distribution.get("mean", np.nan)),
+        naive_mae_value=float(temporal.get("naive_mae", np.nan)),
+    )
+    predictability = _predictability_label(noise_signal_ratio)
+    structure_text = _structure_summary_text(structure)
+    start = _model_starting_point(
+        driver_classification=driver_classification,
+        temporal_signal_score=temporal_score,
+        volatility_classification=str(volatility.get("volatility_classification", "Unknown")),
+        optimal_granularity=optimal_granularity,
+        seasonality_strength=seasonality_strength,
+    )
 
     lines: list[str] = []
     lines.append("DATA CHARACTERIZATION REPORT")
@@ -325,6 +452,9 @@ def build_univariate_summary_report(report: dict) -> str:
     lines.append(
         f"Signal Strength: {signal_label} "
         f"(temporal_signal_strength_score={_fmt_num(temporal_score, 1)}, avg_acf_lag_1_3={_fmt_num(avg_acf, 3)})"
+    )
+    lines.append(
+        f"Predictability: {predictability} (noise_signal_ratio={_fmt_num(noise_signal_ratio, 2)})"
     )
     lines.append(
         f"Variance: {volatility.get('volatility_classification', 'Unknown')} "
@@ -335,10 +465,7 @@ def build_univariate_summary_report(report: dict) -> str:
         f"(skewness={_fmt_num(distribution.get('skewness', np.nan), 3)}, "
         f"kurtosis={_fmt_num(distribution.get('kurtosis', np.nan), 3)})"
     )
-    lines.append(
-        f"Concentration: {structure.get('structure_classification', 'Not provided')} "
-        f"(top5_revenue_share_pct={_fmt_num(structure.get('top5_revenue_share_pct', np.nan), 2)}%)"
-    )
+    lines.append(f"Concentration: {structure_text}")
     lines.append(
         f"Seasonality: {seasonality_label} "
         f"(seasonality_strength_stl={_fmt_num(seasonality_strength, 3)}, "
@@ -350,11 +477,12 @@ def build_univariate_summary_report(report: dict) -> str:
         f"noise_reduction_ratio={_fmt_num(granularity.get('noise_reduction_ratio', np.nan), 3)})"
     )
     lines.append(
-        f"Driver Signal: {driver['exogenous_signal_classification']} "
+        f"Driver Signal: {driver_classification} "
         f"(exogenous_dominance_ratio={_fmt_num(driver['exogenous_dominance_ratio'], 2)}, "
         f"exogenous_r2={_fmt_num(driver['exogenous_r2'], 2)}, "
         f"ar_r2={_fmt_num(driver['ar_r2'], 2)})"
     )
+    lines.append(f"-> {driver_note}")
     lines.append("")
     lines.append(f"CLASSIFICATION: {report.get('classification', 'Unknown')}")
     lines.append("")
@@ -364,6 +492,14 @@ def build_univariate_summary_report(report: dict) -> str:
     lines.append("")
     lines.append("Reason:")
     lines.append(",\n".join(reason_items))
+    lines.append("")
+    lines.append("MODEL STARTING POINT")
+    lines.append("----------------------------------------")
+    lines.append(f"Primary model: {start['primary_model']}")
+    lines.append(f"Baseline model: {start['baseline_model']}")
+    lines.append(f"Training granularity: {start['training_granularity']}")
+    lines.append(f"Loss function: {start['loss_function']}")
+    lines.append(f"Feature usage: {start['feature_usage']}")
     lines.append("")
     lines.append("RISK FLAGS:")
     if risk_flags:
@@ -390,7 +526,12 @@ def build_univariate_summary_report(report: dict) -> str:
     lines.append("ENGINEERING DECISION RECOMMENDATION:")
     lines.append(str(report.get("engineering_decision_recommendation", "")))
     lines.append("")
-    _append_final_output_fields(lines, report, risk_flags)
+    _append_final_output_fields(
+        lines,
+        report,
+        risk_flags,
+        modeling_recommendation_override=recommendation_full,
+    )
     return "\n".join(lines)
 
 
@@ -559,17 +700,34 @@ def build_expanded_summary_report(report: dict) -> str:
         acf_vals = [x for x in acf_vals if np.isfinite(x)]
         avg_acf = float(np.mean(acf_vals)) if acf_vals else np.nan
         signal = _signal_label(float(temporal.get("temporal_signal_strength_score", np.nan)))
+        temporal_score = float(temporal.get("temporal_signal_strength_score", np.nan))
         seasonality = _seasonality_label(float(temporal.get("seasonality_strength_stl", np.nan)))
+        seasonality_strength = float(temporal.get("seasonality_strength_stl", np.nan))
         driver = _resolve_driver_signal(uni, multi=multi)
         reason_items = _build_reason_block(uni, multi=multi)
-        recommendation = str(uni.get("modeling_recommendation", "")).strip()
-        action = recommendation.split(" because ", 1)[0].rstrip(".") if " because " in recommendation else recommendation
+        driver_classification = driver["exogenous_signal_classification"]
+        driver_note = _driver_signal_note(driver_classification)
+        action = _driver_consistent_recommendation(
+            driver_classification=driver_classification,
+            temporal_signal_score=temporal_score,
+            volatility_classification=str(volatility.get("volatility_classification", "Unknown")),
+        )
+        recommendation_full = f"{action} because {', '.join(reason_items)}."
+        noise_signal_ratio = _noise_signal_ratio(
+            mean_value=float(distribution.get("mean", np.nan)),
+            naive_mae_value=float(temporal.get("naive_mae", np.nan)),
+        )
+        predictability = _predictability_label(noise_signal_ratio)
+        structure_text = _structure_summary_text(structure)
 
         lines.append(f"Target: {target}")
         lines.append(
             f"Signal Strength: {signal} "
             f"(temporal_signal_strength_score={_fmt_num(temporal.get('temporal_signal_strength_score', np.nan), 1)}, "
             f"avg_acf_lag_1_3={_fmt_num(avg_acf, 3)})"
+        )
+        lines.append(
+            f"Predictability: {predictability} (noise_signal_ratio={_fmt_num(noise_signal_ratio, 2)})"
         )
         lines.append(
             f"Variance: {volatility.get('volatility_classification', 'Unknown')} "
@@ -580,10 +738,7 @@ def build_expanded_summary_report(report: dict) -> str:
             f"(skewness={_fmt_num(distribution.get('skewness', np.nan), 3)}, "
             f"kurtosis={_fmt_num(distribution.get('kurtosis', np.nan), 3)})"
         )
-        lines.append(
-            f"Concentration: {structure.get('structure_classification', 'Not provided')} "
-            f"(top5_revenue_share_pct={_fmt_num(structure.get('top5_revenue_share_pct', np.nan), 2)}%)"
-        )
+        lines.append(f"Concentration: {structure_text}")
         lines.append(
             f"Seasonality: {seasonality} "
             f"(seasonality_strength_stl={_fmt_num(temporal.get('seasonality_strength_stl', np.nan), 3)}, "
@@ -597,17 +752,32 @@ def build_expanded_summary_report(report: dict) -> str:
             f"noise_reduction_ratio={_fmt_num(granularity.get('noise_reduction_ratio', np.nan), 3)})"
         )
         lines.append(
-            f"Driver Signal: {driver['exogenous_signal_classification']} "
+            f"Driver Signal: {driver_classification} "
             f"(exogenous_dominance_ratio={_fmt_num(driver['exogenous_dominance_ratio'], 2)}, "
             f"exogenous_r2={_fmt_num(driver['exogenous_r2'], 2)}, "
             f"ar_r2={_fmt_num(driver['ar_r2'], 2)})"
         )
+        lines.append(f"-> {driver_note}")
         lines.append(f"CLASSIFICATION: {uni.get('classification', 'Unknown')}")
         lines.append(f"FORECASTABILITY SCORE: {_fmt_num(uni.get('forecastability_score', np.nan), 0)}/100")
         lines.append("RECOMMENDATION:")
         lines.append(f"- {action if action else 'No recommendation generated'}")
         lines.append("Reason:")
         lines.append(",\n".join(reason_items))
+        start = _model_starting_point(
+            driver_classification=driver_classification,
+            temporal_signal_score=temporal_score,
+            volatility_classification=str(volatility.get("volatility_classification", "Unknown")),
+            optimal_granularity=str(granularity.get("optimal_granularity", "original")),
+            seasonality_strength=seasonality_strength,
+        )
+        lines.append("MODEL STARTING POINT")
+        lines.append("----------------------------------------")
+        lines.append(f"Primary model: {start['primary_model']}")
+        lines.append(f"Baseline model: {start['baseline_model']}")
+        lines.append(f"Training granularity: {start['training_granularity']}")
+        lines.append(f"Loss function: {start['loss_function']}")
+        lines.append(f"Feature usage: {start['feature_usage']}")
         lines.append("RISK FLAGS:")
         if risk_flags:
             for item in risk_flags:
@@ -629,7 +799,12 @@ def build_expanded_summary_report(report: dict) -> str:
         )
         lines.append("ENGINEERING DECISION RECOMMENDATION:")
         lines.append(str(uni.get("engineering_decision_recommendation", "")))
-        _append_final_output_fields(lines, uni, risk_flags)
+        _append_final_output_fields(
+            lines,
+            uni,
+            risk_flags,
+            modeling_recommendation_override=recommendation_full,
+        )
         lines.append("")
 
     lines.append("SUMMARY")

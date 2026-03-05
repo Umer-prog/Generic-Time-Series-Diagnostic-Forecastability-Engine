@@ -10,7 +10,7 @@ from multivariate_decision import MultivariateDiagnostic
 from ts_dfe.engine import run_ts_dfe
 
 
-DATA_PATH = Path("preprocessed.xlsx")
+DATA_PATH = Path("sales_actual.xlsx")
 
 if not DATA_PATH.exists():
     raise FileNotFoundError(f"{DATA_PATH} not found in current working directory.")
@@ -19,9 +19,9 @@ df = pd.read_excel(DATA_PATH)
 
 date_candidates = ["Date", "Document Date", "date"]
 target_candidates = ["Sales", "Weekly_Sales", "sales"]
-feature_candidates = ["Quantity", "Unit Price", "Unit_Price", "Price"]
-grain_candidates = ["Region", "Segment", "Brand"]
-structural_candidates = ["Customer", "Material"]
+feature_candidates = ["Quantity", "Unit Price", "Unit_Price", "Price", "Sales Type"]
+grain_candidates = ["Inventory Location ID"] #["Region", "Segment", "Brand"]
+structural_candidates = ["Customer Account", "Material"]
 
 date_col = next((c for c in date_candidates if c in df.columns), None)
 target_col = next((c for c in target_candidates if c in df.columns), None)
@@ -70,8 +70,8 @@ uni_technical = run_ts_dfe(
     structural_cols=structural_cols,
     report_mode="technical",
 )
-print("\n=== UNIVARIATE | TECHNICAL MODE ===")
-print(uni_technical)
+# print("\n=== UNIVARIATE | TECHNICAL MODE ===")
+# print(uni_technical)
 
 
 # 1b) Univariate summary mode
@@ -93,12 +93,13 @@ multi_technical = run_ts_dfe(
     target_cols=[target_col],  # single target
     feature_cols=features,
     mode="multivariate",
+    structural_cols=structural_cols,
     report_mode="technical",
 )
-print("\n=== MULTIVARIATE | TECHNICAL MODE ===")
-print(multi_technical)
-multi_technical_signal = multi_technical["overall_multivariate"][target_col]
-print_multi_signal_metrics("MULTIVARIATE SIGNAL METRICS | TECHNICAL", multi_technical_signal)
+# print("\n=== MULTIVARIATE | TECHNICAL MODE ===")
+# print(multi_technical)
+# multi_technical_signal = multi_technical["overall_multivariate"][target_col]
+# print_multi_signal_metrics("MULTIVARIATE SIGNAL METRICS | TECHNICAL", multi_technical_signal)
 
 
 # 2b) Multivariate summary mode (single target + features)
@@ -107,6 +108,7 @@ multi_summary = run_ts_dfe(
     date_col=date_col,
     target_cols=[target_col],
     feature_cols=features,
+    structural_cols=structural_cols,
     mode="multivariate",
     report_mode="summary",
 )
@@ -117,21 +119,21 @@ print_multi_signal_metrics("MULTIVARIATE SIGNAL METRICS | SUMMARY", multi_summar
 
 
 # 3) Optional: multivariate + grain-wise technical run
-multi_grain_report = run_ts_dfe(
-    df,
-    date_col=date_col,
-    target_cols=[target_col],
-    feature_cols=features,
-    grain_cols=grains,
-    structural_cols=structural_cols,
-    mode="multivariate",
-    report_mode="technical",
-    min_points_per_group=30,
-    max_grain_groups=12,
-)
-print("\n=== MULTIVARIATE + GRAIN-WISE | TECHNICAL MODE ===")
-print(multi_grain_report)
-print("grain groups:", len(multi_grain_report["by_grain"]))
+# multi_grain_report = run_ts_dfe(
+#     df,
+#     date_col=date_col,
+#     target_cols=[target_col],
+#     feature_cols=features,
+#     grain_cols=grains,
+#     structural_cols=structural_cols,
+#     mode="multivariate",
+#     report_mode="technical",
+#     min_points_per_group=30,
+#     max_grain_groups=12,
+# )
+# print("\n=== MULTIVARIATE + GRAIN-WISE | TECHNICAL MODE ===")
+# print(multi_grain_report)
+# print("grain groups:", len(multi_grain_report["by_grain"]))
 
 
 # 4) Standalone MultivariateDiagnostic check
