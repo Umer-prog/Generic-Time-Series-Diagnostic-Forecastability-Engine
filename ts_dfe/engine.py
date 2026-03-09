@@ -61,7 +61,13 @@ def _normalize_targets(target_col: str | None, target_cols: list[str] | None) ->
 def _normalize_existing_columns(df: pd.DataFrame, cols: list[str] | None) -> list[str]:
     if not cols:
         return []
-    return [c for c in cols if c in df.columns]
+    out: list[str] = []
+    seen: set[str] = set()
+    for c in cols:
+        if c in df.columns and c not in seen:
+            out.append(c)
+            seen.add(c)
+    return out
 
 
 def _resolve_mode(mode: str, target_cols: list[str], feature_cols: list[str]) -> str:
@@ -144,8 +150,13 @@ def _prepare_multivariate_timeseries(
     feature_cols: list[str],
 ) -> tuple[pd.DataFrame, dict]:
     feature_cols = [c for c in feature_cols if c in df.columns and c != target_col]
+    # Preserve order while removing duplicates.
+    seen_features: set[str] = set()
+    feature_cols = [c for c in feature_cols if not (c in seen_features or seen_features.add(c))]
+
     keep_cols = [date_col, target_col] + feature_cols
-    keep_cols = [c for c in keep_cols if c in df.columns]
+    seen_keep: set[str] = set()
+    keep_cols = [c for c in keep_cols if c in df.columns and not (c in seen_keep or seen_keep.add(c))]
     work = df[keep_cols].copy()
     work[date_col] = pd.to_datetime(work[date_col], errors="coerce")
     work = work.dropna(subset=[date_col])
@@ -213,7 +224,8 @@ def _aggregate_for_granularity(
         return df.copy()
 
     keep_cols = [date_col] + grain_cols + target_cols + feature_cols
-    keep_cols = [c for c in keep_cols if c in df.columns]
+    seen_keep: set[str] = set()
+    keep_cols = [c for c in keep_cols if c in df.columns and not (c in seen_keep or seen_keep.add(c))]
     work = df[keep_cols].copy()
     work[date_col] = pd.to_datetime(work[date_col], errors="coerce")
     work = work.dropna(subset=[date_col])

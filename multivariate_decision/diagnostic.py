@@ -117,6 +117,8 @@ class MultivariateDiagnostic:
     def _align_inputs(self, target: pd.Series, exog: pd.DataFrame) -> tuple[pd.Series, pd.DataFrame]:
         y = pd.Series(target).astype(float).rename("target")
         X = pd.DataFrame(exog).copy()
+        if X.shape[1] > 0:
+            X = X.loc[:, ~X.columns.duplicated()].copy()
         for col in X.columns:
             X[col] = pd.to_numeric(X[col], errors="coerce")
         frame = pd.concat([y, X], axis=1).dropna()

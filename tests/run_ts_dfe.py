@@ -10,22 +10,23 @@ from multivariate_decision import MultivariateDiagnostic
 from ts_dfe.engine import _prepare_multivariate_timeseries, run_ts_dfe
 
 
-DATA_PATH = Path("sales_actual.xlsx")
+DATA_PATH = Path("preprocessed.xlsx")
 
 if not DATA_PATH.exists():
     raise FileNotFoundError(f"{DATA_PATH} not found in current working directory.")
 
 df = pd.read_excel(DATA_PATH)
+#df = pd.read_csv(DATA_PATH)
 
 date_candidates = ["Date", "Document Date", "date"]
 target_candidates = ["Sales", "Weekly_Sales", "sales"]
-feature_candidates = ["Quantity", "Unit Price", "Unit_Price", "Price", "Sales Type"]
-grain_candidates = ["Inventory Location ID"] #["Region", "Segment", "Brand"]
-structural_candidates = ["Customer Account", "Material"]
+feature_candidates = ["Region", "Segment", "Brand", "Brand"] #["Holiday_flag","Temperature", "Fuel_Price", "CPI", "Unemployment"] #["Quantity", "Unit Price", "Unit_Price", "Price", "Sales Type"]
+grain_candidates =  ["Inventory Location ID"]#["Region", "Segment", "Brand"]
+structural_candidates = ["Customer", "Material"]
 
 date_col = next((c for c in date_candidates if c in df.columns), None)
 target_col = next((c for c in target_candidates if c in df.columns), None)
-features = [c for c in feature_candidates if c in df.columns and c != target_col]
+features = list(dict.fromkeys([c for c in feature_candidates if c in df.columns and c != target_col]))
 grains = [c for c in grain_candidates if c in df.columns]  # keep one grain column for readable output
 structural_cols = [c for c in structural_candidates if c in df.columns]
 
