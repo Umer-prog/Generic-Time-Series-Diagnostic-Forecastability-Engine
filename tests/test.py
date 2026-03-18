@@ -3,8 +3,8 @@ sys.path.insert(0, r"D:/OneDrive - Global Data 365/Analytics Engine templates/te
 from ts_dfe.engine import run_ts_dfe
 import pandas as pd
 
-#df = pd.read_excel("Walmart_Sales.csv")
-df = pd.read_csv("Walmart_Sales.csv")
+df = pd.read_excel("Sales.xlsx")
+#df = pd.read_csv("Walmart_Sales.csv")
 
 report = run_ts_dfe(df, date_col="Date", target_col="Weekly_Sales", structural_cols=[""])
 

@@ -9,7 +9,6 @@ try:
         clip,
         clip01,
         manual_acf,
-        mean_forecast_mae,
         naive_mae,
         safe_div,
         safe_float,
@@ -20,7 +19,6 @@ except ImportError:
         clip,
         clip01,
         manual_acf,
-        mean_forecast_mae,
         naive_mae,
         safe_div,
         safe_float,
@@ -36,7 +34,6 @@ def _metrics_for_series(series: pd.Series) -> dict:
             "acf1": np.nan,
             "naive_mae": np.nan,
             "ar1_mae": np.nan,
-            "mean_forecast_mae": np.nan,
             "model_improvement_ratio": np.nan,
             "granularity_score": np.nan,
         }
@@ -47,7 +44,6 @@ def _metrics_for_series(series: pd.Series) -> dict:
     acf1 = safe_float(manual_acf(s, max_lag=1).get(1, np.nan), default=np.nan)
     naive_err = naive_mae(s)
     ar1_err = ar_mae(s, lags=1)
-    mean_err = mean_forecast_mae(s)
     model_improvement = safe_div(naive_err - ar1_err, naive_err, default=np.nan)
 
     granularity_score = 100.0 * (
@@ -63,7 +59,6 @@ def _metrics_for_series(series: pd.Series) -> dict:
         "acf1": float(acf1),
         "naive_mae": float(naive_err),
         "ar1_mae": float(ar1_err),
-        "mean_forecast_mae": float(mean_err),
         "model_improvement_ratio": float(model_improvement),
         "granularity_score": float(granularity_score),
     }
@@ -113,5 +108,4 @@ def analyze_granularity(regular_series: pd.Series) -> dict:
         "noise_reduction_ratio": float(noise_reduction_ratio),
         "model_improvement_ratio": float(model_improvement_ratio),
         "optimal_granularity": best_granularity,
-        "optimal_granularity_score": float(best_score),
     }

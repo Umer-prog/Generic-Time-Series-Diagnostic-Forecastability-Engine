@@ -123,9 +123,9 @@ def test_temporal_short_series_returns_nan_metrics() -> None:
     out = analyze_temporal(pd.Series([1, 2, 3, 4, 5]), freq_seconds=86400.0)
     assert np.isnan(out["temporal_signal_strength_score"])
     assert out["seasonal_lag"] == 0.0
-    for i in range(1, 11):
+    for i in range(1, 4):
         assert np.isnan(out[f"acf_lag_{i}"])
-        assert np.isnan(out[f"pacf_lag_{i}"])
+    assert "pacf_lag_1" not in out
 
 
 def test_stationarity_trend_dominated_classification() -> None:
@@ -196,7 +196,7 @@ def test_synthesis_and_readable_report_include_metric_grounded_recommendation() 
     assert "ENGINEERING DECISION RECOMMENDATION:" in readable
 
 
-def test_summary_report_mode_includes_driver_signal_and_final_fields() -> None:
+def test_summary_report_mode_structure() -> None:
     df = _seasonal_df(n=150, seed=31)
     report = run_ts_dfe(
         df,
@@ -210,8 +210,16 @@ def test_summary_report_mode_includes_driver_signal_and_final_fields() -> None:
     assert report["report_mode"] == "summary"
     assert text == report["human_readable_report"]
     assert "DATA CHARACTERIZATION REPORT" in text
-    assert "Driver Signal:" in text
-    assert "[FINAL OUTPUT FIELDS]" in text
+    # Classification is now the headline — appears before other detail lines.
+    assert "CLASSIFICATION:" in text
+    assert "FORECASTABILITY SCORE:" in text
+    assert "Stationarity:" in text
+    assert "MODEL STARTING POINT" in text
+    assert "RISK FLAGS:" in text
+    # Removed from summary mode.
+    assert "Driver Signal:" not in text
+    assert "[FINAL OUTPUT FIELDS]" not in text
+    assert "EXECUTIVE SUMMARY:" not in text
 
 
 def test_multivariate_exogenous_dominance_fields_and_technical_section() -> None:

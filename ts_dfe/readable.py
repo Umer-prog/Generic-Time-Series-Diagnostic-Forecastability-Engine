@@ -142,36 +142,15 @@ def _build_reason_block(report: dict, multi: dict | None = None) -> list[str]:
     distribution = report.get("distribution", {})
     volatility = report.get("volatility", {})
     granularity = report.get("granularity", {})
-    driver = _resolve_driver_signal(report, multi=multi)
+    stationarity = report.get("stationarity", {})
 
     reason_items = [
+        f"stationarity_classification={stationarity.get('stationarity_classification', 'Unknown')}",
         f"volatility_classification={volatility.get('volatility_classification', 'Unknown')}",
         f"distribution_classification={distribution.get('distribution_classification', 'Unknown')}",
         f"model_improvement_ratio={_fmt_num(granularity.get('model_improvement_ratio', np.nan), 3)}",
-        f"exogenous_signal_classification={driver['exogenous_signal_classification']}",
     ]
     return reason_items
-
-
-def _noise_signal_ratio(mean_value: float, naive_mae_value: float) -> float:
-    m = float(mean_value)
-    n = float(naive_mae_value)
-    if not np.isfinite(m) or not np.isfinite(n):
-        return np.nan
-    denom = abs(m)
-    if denom <= 1e-12:
-        return np.nan
-    return float(n / denom)
-
-
-def _predictability_label(noise_signal_ratio: float) -> str:
-    if not np.isfinite(noise_signal_ratio):
-        return "Unknown"
-    if noise_signal_ratio > 1.0:
-        return "Very noisy"
-    if noise_signal_ratio >= 0.5:
-        return "Moderate noise"
-    return "Strong signal"
 
 
 def _structure_summary_text(structure: dict) -> str:
@@ -182,14 +161,6 @@ def _structure_summary_text(structure: dict) -> str:
         f"{structure.get('structure_classification', 'Not provided')} "
         f"(top5_revenue_share_pct={_fmt_num(structure.get('top5_revenue_share_pct', np.nan), 2)}%)"
     )
-
-
-def _driver_signal_note(driver_classification: str) -> str:
-    if driver_classification == "Exogenous Dominated":
-        return "Exogenous drivers are primary predictive signal"
-    if driver_classification == "Mixed Drivers":
-        return "Both autoregressive and exogenous effects are relevant"
-    return "Exogenous drivers provide limited predictive power"
 
 
 def _driver_consistent_recommendation(
@@ -224,21 +195,13 @@ def _model_starting_point(
 
     if driver_classification == "Exogenous Dominated":
         primary_model = "Event-driven regression" if vol == "Event volatility" else "Feature-based regression"
-        feature_usage = "Required (high driver signal)"
     elif driver_classification == "Mixed Drivers":
         primary_model = "Hybrid autoregressive + regression model"
-        feature_usage = "Recommended (mixed driver signal)"
     else:
         if np.isfinite(temporal_signal_score) and temporal_signal_score >= 35.0:
             primary_model = "Autoregressive model (ARIMA/ETS)"
         else:
             primary_model = "Robust regression or baseline model"
-        feature_usage = "Optional (low driver signal)"
-
-    if np.isfinite(seasonality_strength) and seasonality_strength >= 0.2:
-        baseline_model = "Seasonal naive"
-    else:
-        baseline_model = "Naive"
 
     if vol in {"Event volatility", "Heteroskedastic", "Clustered volatility"}:
         loss_function = "Quantile or Huber"
@@ -249,37 +212,9 @@ def _model_starting_point(
 
     return {
         "primary_model": primary_model,
-        "baseline_model": baseline_model,
         "training_granularity": gran_title,
         "loss_function": loss_function,
-        "feature_usage": feature_usage,
     }
-
-
-def _effective_observations_monthly(report: dict, multi: dict | None = None) -> int | None:
-    m = multi if isinstance(multi, dict) else report.get("multivariate_signal", {})
-    if isinstance(m, dict):
-        ctx = m.get("data_context", {})
-        if isinstance(ctx, dict):
-            val = ctx.get("effective_observations_monthly", None)
-            try:
-                iv = int(val)
-                if iv >= 0:
-                    return iv
-            except Exception:
-                pass
-
-    gran = report.get("granularity", {})
-    if isinstance(gran, dict):
-        monthly = gran.get("monthly", {})
-        if isinstance(monthly, dict):
-            try:
-                iv = int(float(monthly.get("count", np.nan)))
-                if iv >= 0:
-                    return iv
-            except Exception:
-                pass
-    return None
 
 
 def _append_final_output_fields(
@@ -431,14 +366,6 @@ def build_univariate_summary_report(report: dict) -> str:
     if not isinstance(risk_flags, list):
         risk_flags = [str(risk_flags)]
 
-    acf_vals = [
-        abs(float(temporal.get("acf_lag_1", np.nan))),
-        abs(float(temporal.get("acf_lag_2", np.nan))),
-        abs(float(temporal.get("acf_lag_3", np.nan))),
-    ]
-    acf_vals = [x for x in acf_vals if np.isfinite(x)]
-    avg_acf = float(np.mean(acf_vals)) if acf_vals else np.nan
-
     temporal_score = float(temporal.get("temporal_signal_strength_score", np.nan))
     signal_label = _signal_label(temporal_score)
     seasonality_strength = float(temporal.get("seasonality_strength_stl", np.nan))
@@ -449,23 +376,14 @@ def build_univariate_summary_report(report: dict) -> str:
     signal_gain_pct = (signal_gain_ratio - 1.0) * 100.0 if np.isfinite(signal_gain_ratio) else np.nan
 
     driver = _resolve_driver_signal(report)
-    multi_signal = report.get("multivariate_signal", {})
-    reason_items = _build_reason_block(report)
     driver_classification = driver["exogenous_signal_classification"]
-    driver_note = _driver_signal_note(driver_classification)
     action = _driver_consistent_recommendation(
         driver_classification=driver_classification,
         temporal_signal_score=temporal_score,
         volatility_classification=str(volatility.get("volatility_classification", "Unknown")),
     )
-    recommendation_full = f"{action} because {', '.join(reason_items)}."
-    noise_signal_ratio = _noise_signal_ratio(
-        mean_value=float(distribution.get("mean", np.nan)),
-        naive_mae_value=float(temporal.get("naive_mae", np.nan)),
-    )
-    predictability = _predictability_label(noise_signal_ratio)
+    reason_items = _build_reason_block(report)
     structure_text = _structure_summary_text(structure)
-    effective_obs_monthly = _effective_observations_monthly(report, multi=multi_signal)
     start = _model_starting_point(
         driver_classification=driver_classification,
         temporal_signal_score=temporal_score,
@@ -477,23 +395,28 @@ def build_univariate_summary_report(report: dict) -> str:
     lines: list[str] = []
     lines.append("DATA CHARACTERIZATION REPORT")
     lines.append("----------------------------------------")
+    lines.append(f"CLASSIFICATION: {report.get('classification', 'Unknown')}")
+    lines.append(f"FORECASTABILITY SCORE: {_fmt_num(report.get('forecastability_score', np.nan), 0)}/100")
+    lines.append(
+        f"Key drivers: temporal_signal_strength_score={_fmt_num(temporal_score, 1)}, "
+        f"stability_score={_fmt_num(stationarity.get('stability_score', np.nan), 1)}, "
+        f"model_improvement_ratio={_fmt_num(granularity.get('model_improvement_ratio', np.nan), 3)}"
+    )
+    lines.append("")
+    lines.append(
+        f"Stationarity: {stationarity.get('stationarity_classification', 'Unknown')} "
+        f"(stability_score={_fmt_num(stationarity.get('stability_score', np.nan), 1)})"
+    )
     lines.append(
         f"Signal Strength: {signal_label} "
-        f"(temporal_signal_strength_score={_fmt_num(temporal_score, 1)}, avg_acf_lag_1_3={_fmt_num(avg_acf, 3)})"
-    )
-    lines.append(
-        f"Predictability: {predictability} (noise_signal_ratio={_fmt_num(noise_signal_ratio, 2)})"
-    )
-    lines.append(
-        f"Variance: {volatility.get('volatility_classification', 'Unknown')} "
-        f"(volatility_risk_score={_fmt_num(volatility.get('volatility_risk_score', np.nan), 1)})"
+        f"(temporal_signal_strength_score={_fmt_num(temporal_score, 1)})"
     )
     lines.append(
         f"Distribution: {distribution.get('distribution_classification', 'Unknown')} "
-        f"(skewness={_fmt_num(distribution.get('skewness', np.nan), 3)}, "
-        f"kurtosis={_fmt_num(distribution.get('kurtosis', np.nan), 3)})"
+        f"(zero_inflation_ratio={_fmt_num(distribution.get('zero_inflation_ratio', np.nan), 2)}, "
+        f"skewness={_fmt_num(distribution.get('skewness', np.nan), 3)})"
     )
-    lines.append(f"Concentration: {structure_text}")
+    lines.append(f"Volatility: {volatility.get('volatility_classification', 'Unknown')}")
     lines.append(
         f"Seasonality: {seasonality_label} "
         f"(seasonality_strength_stl={_fmt_num(seasonality_strength, 3)}, "
@@ -501,22 +424,10 @@ def build_univariate_summary_report(report: dict) -> str:
     )
     lines.append(
         f"Granularity: optimal={optimal_granularity} "
-        f"(signal_gain={_fmt_num(signal_gain_pct, 1)}%, "
-        f"noise_reduction_ratio={_fmt_num(granularity.get('noise_reduction_ratio', np.nan), 3)})"
+        f"(signal_gain={_fmt_num(signal_gain_pct, 1)}%)"
     )
-    if effective_obs_monthly is not None:
-        lines.append(f"Effective observations (monthly): {effective_obs_monthly}")
-    lines.append(
-        f"Driver Signal: {driver_classification} "
-        f"(exogenous_dominance_ratio={_fmt_num(driver['exogenous_dominance_ratio'], 2)}, "
-        f"exogenous_r2={_fmt_num(driver['exogenous_r2'], 3)}, "
-        f"ar_r2={_fmt_num(driver['ar_r2'], 3)})"
-    )
-    lines.append(f"-> {driver_note}")
+    lines.append(f"Concentration: {structure_text}")
     lines.append("")
-    lines.append(f"CLASSIFICATION: {report.get('classification', 'Unknown')}")
-    lines.append("")
-    lines.append(f"FORECASTABILITY SCORE: {_fmt_num(report.get('forecastability_score', np.nan), 0)}/100")
     lines.append("RECOMMENDATION:")
     lines.append(f"- {action if action else 'No recommendation generated'}")
     lines.append("")
@@ -526,10 +437,8 @@ def build_univariate_summary_report(report: dict) -> str:
     lines.append("MODEL STARTING POINT")
     lines.append("----------------------------------------")
     lines.append(f"Primary model: {start['primary_model']}")
-    lines.append(f"Baseline model: {start['baseline_model']}")
     lines.append(f"Training granularity: {start['training_granularity']}")
     lines.append(f"Loss function: {start['loss_function']}")
-    lines.append(f"Feature usage: {start['feature_usage']}")
     lines.append("")
     lines.append("RISK FLAGS:")
     if risk_flags:
@@ -537,31 +446,6 @@ def build_univariate_summary_report(report: dict) -> str:
             lines.append(f"- {item}")
     else:
         lines.append("- None")
-    lines.append("")
-    lines.append("EXECUTIVE SUMMARY:")
-    lines.append(
-        f"{report.get('classification', 'Unknown')} with forecastability_score="
-        f"{_fmt_num(report.get('forecastability_score', np.nan), 2)}."
-    )
-    lines.append("")
-    lines.append("Key metrics:")
-    lines.append(
-        f"temporal_signal_strength_score={_fmt_num(temporal_score, 3)},\n"
-        f"stability_score={_fmt_num(stationarity.get('stability_score', np.nan), 3)},\n"
-        f"model_improvement_ratio={_fmt_num(granularity.get('model_improvement_ratio', np.nan), 3)},\n"
-        f"exogenous_dominance_ratio={_fmt_num(driver['exogenous_dominance_ratio'], 2)},\n"
-        f"optimal_granularity={optimal_granularity}."
-    )
-    lines.append("")
-    lines.append("ENGINEERING DECISION RECOMMENDATION:")
-    lines.append(str(report.get("engineering_decision_recommendation", "")))
-    lines.append("")
-    _append_final_output_fields(
-        lines,
-        report,
-        risk_flags,
-        modeling_recommendation_override=recommendation_full,
-    )
     return "\n".join(lines)
 
 
@@ -729,122 +613,81 @@ def build_expanded_summary_report(report: dict) -> str:
         if not isinstance(risk_flags, list):
             risk_flags = [str(risk_flags)]
 
-        acf_vals = [
-            abs(float(temporal.get("acf_lag_1", np.nan))),
-            abs(float(temporal.get("acf_lag_2", np.nan))),
-            abs(float(temporal.get("acf_lag_3", np.nan))),
-        ]
-        acf_vals = [x for x in acf_vals if np.isfinite(x)]
-        avg_acf = float(np.mean(acf_vals)) if acf_vals else np.nan
-        signal = _signal_label(float(temporal.get("temporal_signal_strength_score", np.nan)))
         temporal_score = float(temporal.get("temporal_signal_strength_score", np.nan))
-        seasonality = _seasonality_label(float(temporal.get("seasonality_strength_stl", np.nan)))
+        signal = _signal_label(temporal_score)
         seasonality_strength = float(temporal.get("seasonality_strength_stl", np.nan))
+        seasonality = _seasonality_label(seasonality_strength)
+        optimal_granularity = str(granularity.get("optimal_granularity", "original"))
+        signal_gain_ratio = float(granularity.get("signal_gain_ratio", np.nan))
+        signal_gain_pct = (signal_gain_ratio - 1.0) * 100.0 if np.isfinite(signal_gain_ratio) else np.nan
+
         driver = _resolve_driver_signal(uni, multi=multi)
-        reason_items = _build_reason_block(uni, multi=multi)
         driver_classification = driver["exogenous_signal_classification"]
-        driver_note = _driver_signal_note(driver_classification)
         action = _driver_consistent_recommendation(
             driver_classification=driver_classification,
             temporal_signal_score=temporal_score,
             volatility_classification=str(volatility.get("volatility_classification", "Unknown")),
         )
-        recommendation_full = f"{action} because {', '.join(reason_items)}."
-        noise_signal_ratio = _noise_signal_ratio(
-            mean_value=float(distribution.get("mean", np.nan)),
-            naive_mae_value=float(temporal.get("naive_mae", np.nan)),
-        )
-        predictability = _predictability_label(noise_signal_ratio)
+        reason_items = _build_reason_block(uni, multi=multi)
         structure_text = _structure_summary_text(structure)
-        effective_obs_monthly = _effective_observations_monthly(uni, multi=multi)
+        start = _model_starting_point(
+            driver_classification=driver_classification,
+            temporal_signal_score=temporal_score,
+            volatility_classification=str(volatility.get("volatility_classification", "Unknown")),
+            optimal_granularity=optimal_granularity,
+            seasonality_strength=seasonality_strength,
+        )
 
         lines.append(f"Target: {target}")
+        lines.append(f"CLASSIFICATION: {uni.get('classification', 'Unknown')}")
+        lines.append(f"FORECASTABILITY SCORE: {_fmt_num(uni.get('forecastability_score', np.nan), 0)}/100")
+        lines.append(
+            f"Key drivers: temporal_signal_strength_score={_fmt_num(temporal_score, 1)}, "
+            f"stability_score={_fmt_num(stationarity.get('stability_score', np.nan), 1)}, "
+            f"model_improvement_ratio={_fmt_num(granularity.get('model_improvement_ratio', np.nan), 3)}"
+        )
+        lines.append("")
+        lines.append(
+            f"Stationarity: {stationarity.get('stationarity_classification', 'Unknown')} "
+            f"(stability_score={_fmt_num(stationarity.get('stability_score', np.nan), 1)})"
+        )
         lines.append(
             f"Signal Strength: {signal} "
-            f"(temporal_signal_strength_score={_fmt_num(temporal.get('temporal_signal_strength_score', np.nan), 1)}, "
-            f"avg_acf_lag_1_3={_fmt_num(avg_acf, 3)})"
-        )
-        lines.append(
-            f"Predictability: {predictability} (noise_signal_ratio={_fmt_num(noise_signal_ratio, 2)})"
-        )
-        lines.append(
-            f"Variance: {volatility.get('volatility_classification', 'Unknown')} "
-            f"(volatility_risk_score={_fmt_num(volatility.get('volatility_risk_score', np.nan), 1)})"
+            f"(temporal_signal_strength_score={_fmt_num(temporal_score, 1)})"
         )
         lines.append(
             f"Distribution: {distribution.get('distribution_classification', 'Unknown')} "
-            f"(skewness={_fmt_num(distribution.get('skewness', np.nan), 3)}, "
-            f"kurtosis={_fmt_num(distribution.get('kurtosis', np.nan), 3)})"
+            f"(zero_inflation_ratio={_fmt_num(distribution.get('zero_inflation_ratio', np.nan), 2)}, "
+            f"skewness={_fmt_num(distribution.get('skewness', np.nan), 3)})"
         )
-        lines.append(f"Concentration: {structure_text}")
+        lines.append(f"Volatility: {volatility.get('volatility_classification', 'Unknown')}")
         lines.append(
             f"Seasonality: {seasonality} "
             f"(seasonality_strength_stl={_fmt_num(temporal.get('seasonality_strength_stl', np.nan), 3)}, "
             f"seasonal_lag={_fmt_num(temporal.get('seasonal_lag', np.nan), 0)})"
         )
-        signal_gain_ratio = float(granularity.get("signal_gain_ratio", np.nan))
-        signal_gain_pct = (signal_gain_ratio - 1.0) * 100.0 if np.isfinite(signal_gain_ratio) else np.nan
         lines.append(
-            f"Granularity: optimal={granularity.get('optimal_granularity', 'original')} "
-            f"(signal_gain={_fmt_num(signal_gain_pct, 1)}%, "
-            f"noise_reduction_ratio={_fmt_num(granularity.get('noise_reduction_ratio', np.nan), 3)})"
+            f"Granularity: optimal={optimal_granularity} "
+            f"(signal_gain={_fmt_num(signal_gain_pct, 1)}%)"
         )
-        if effective_obs_monthly is not None:
-            lines.append(f"Effective observations (monthly): {effective_obs_monthly}")
-        lines.append(
-            f"Driver Signal: {driver_classification} "
-            f"(exogenous_dominance_ratio={_fmt_num(driver['exogenous_dominance_ratio'], 2)}, "
-            f"exogenous_r2={_fmt_num(driver['exogenous_r2'], 3)}, "
-            f"ar_r2={_fmt_num(driver['ar_r2'], 3)})"
-        )
-        lines.append(f"-> {driver_note}")
-        lines.append(f"CLASSIFICATION: {uni.get('classification', 'Unknown')}")
-        lines.append(f"FORECASTABILITY SCORE: {_fmt_num(uni.get('forecastability_score', np.nan), 0)}/100")
+        lines.append(f"Concentration: {structure_text}")
+        lines.append("")
         lines.append("RECOMMENDATION:")
         lines.append(f"- {action if action else 'No recommendation generated'}")
         lines.append("Reason:")
         lines.append(",\n".join(reason_items))
-        start = _model_starting_point(
-            driver_classification=driver_classification,
-            temporal_signal_score=temporal_score,
-            volatility_classification=str(volatility.get("volatility_classification", "Unknown")),
-            optimal_granularity=str(granularity.get("optimal_granularity", "original")),
-            seasonality_strength=seasonality_strength,
-        )
+        lines.append("")
         lines.append("MODEL STARTING POINT")
         lines.append("----------------------------------------")
         lines.append(f"Primary model: {start['primary_model']}")
-        lines.append(f"Baseline model: {start['baseline_model']}")
         lines.append(f"Training granularity: {start['training_granularity']}")
         lines.append(f"Loss function: {start['loss_function']}")
-        lines.append(f"Feature usage: {start['feature_usage']}")
         lines.append("RISK FLAGS:")
         if risk_flags:
             for item in risk_flags:
                 lines.append(f"- {item}")
         else:
             lines.append("- None")
-        lines.append("EXECUTIVE SUMMARY:")
-        lines.append(
-            f"{uni.get('classification', 'Unknown')} with forecastability_score="
-            f"{_fmt_num(uni.get('forecastability_score', np.nan), 2)}."
-        )
-        lines.append("Key metrics:")
-        lines.append(
-            f"temporal_signal_strength_score={_fmt_num(temporal.get('temporal_signal_strength_score', np.nan), 3)},\n"
-            f"stability_score={_fmt_num(stationarity.get('stability_score', np.nan), 3)},\n"
-            f"model_improvement_ratio={_fmt_num(granularity.get('model_improvement_ratio', np.nan), 3)},\n"
-            f"exogenous_dominance_ratio={_fmt_num(driver['exogenous_dominance_ratio'], 2)},\n"
-            f"optimal_granularity={granularity.get('optimal_granularity', 'original')}."
-        )
-        lines.append("ENGINEERING DECISION RECOMMENDATION:")
-        lines.append(str(uni.get("engineering_decision_recommendation", "")))
-        _append_final_output_fields(
-            lines,
-            uni,
-            risk_flags,
-            modeling_recommendation_override=recommendation_full,
-        )
         lines.append("")
 
     lines.append("SUMMARY")
@@ -866,7 +709,3 @@ def build_summary_report(report: dict) -> str:
 
 def build_human_readable_report(report: dict) -> str:
     return build_univariate_technical_report(report)
-
-
-def build_expanded_human_readable_report(report: dict) -> str:
-    return build_expanded_technical_report(report)

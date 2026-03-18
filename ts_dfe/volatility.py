@@ -42,7 +42,6 @@ def analyze_volatility(series: pd.Series) -> dict:
             "rolling_std_mean_corr": np.nan,
             "arch_test_pvalue": np.nan,
             "volatility_clustering_index": np.nan,
-            "cv_across_time_windows": np.nan,
             "event_volatility_index": np.nan,
             "volatility_risk_score": np.nan,
             "volatility_classification": "Insufficient data",
@@ -67,16 +66,6 @@ def analyze_volatility(series: pd.Series) -> dict:
     squared = changes**2
     acf_sq = manual_acf(squared, max_lag=1)
     volatility_clustering_index = safe_float(acf_sq.get(1, np.nan), default=np.nan)
-
-    segments = np.array_split(s.values, min(8, max(3, len(s) // max(window, 1))))
-    segment_cv = []
-    for seg in segments:
-        if len(seg) < 3:
-            continue
-        seg_mean = np.mean(seg)
-        seg_std = np.std(seg, ddof=0)
-        segment_cv.append(safe_float(seg_std / (abs(seg_mean) + 1e-9)))
-    cv_across_windows = safe_float(np.std(segment_cv, ddof=0), default=np.nan) if segment_cv else np.nan
 
     abs_changes = np.abs(changes.values)
     if len(abs_changes) >= 5:
@@ -112,7 +101,6 @@ def analyze_volatility(series: pd.Series) -> dict:
         "rolling_std_mean_corr": float(rolling_std_mean_corr),
         "arch_test_pvalue": float(arch_test_pvalue),
         "volatility_clustering_index": float(volatility_clustering_index),
-        "cv_across_time_windows": float(cv_across_windows),
         "event_volatility_index": float(event_volatility_index),
         "volatility_risk_score": float(volatility_risk_score),
         "volatility_classification": classification,

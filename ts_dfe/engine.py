@@ -17,8 +17,6 @@ try:
     from .integrity import analyze_integrity
     from .readable import (
         TSDFEReport,
-        build_expanded_human_readable_report,
-        build_human_readable_report,
         build_summary_report,
         build_technical_report,
     )
@@ -34,8 +32,6 @@ except ImportError:
     from integrity import analyze_integrity
     from readable import (
         TSDFEReport,
-        build_expanded_human_readable_report,
-        build_human_readable_report,
         build_summary_report,
         build_technical_report,
     )

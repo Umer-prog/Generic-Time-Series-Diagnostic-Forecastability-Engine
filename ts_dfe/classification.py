@@ -62,7 +62,7 @@ def _risk_flags(results: dict) -> list[str]:
         )
     if granularity.get("optimal_granularity") != "original":
         flags.append(
-            "Forecastability improves with aggregation: "
+            "Signal is stronger at aggregated granularity — consider modeling at this level: "
             f"optimal_granularity={granularity.get('optimal_granularity')}, "
             f"signal_gain_ratio={_fmt(granularity.get('signal_gain_ratio', np.nan))}."
         )
@@ -104,8 +104,19 @@ def _determine_classification(results: dict, forecastability_score: float) -> st
     ):
         return "Smooth Autoregressive"
 
+    # Intermittent demand: many zeros but no large event spikes.
+    # Distinct from Event-Driven Transactional — needs Croston/SBA, not exogenous-feature models.
+    ev_index = safe_float(volatility.get("event_volatility_index", 0.0), 0.0)
     if (
-        distribution.get("distribution_classification") in {"Zero-inflated", "Skewed transactional"}
+        distribution.get("distribution_classification") == "Zero-inflated"
+        and volatility.get("volatility_classification") != "Event volatility"
+        and ev_index <= 3.0
+    ):
+        return "Intermittent Demand"
+
+    # Spikes or highly skewed flow — event-driven pattern.
+    if (
+        distribution.get("distribution_classification") == "Skewed transactional"
         or volatility.get("volatility_classification") == "Event volatility"
     ):
         return "Event-Driven Transactional"
@@ -119,6 +130,7 @@ def _build_modeling_recommendation(final_classification: str, results: dict) -> 
     volatility = results["volatility"]
     granularity = results["granularity"]
     structure = results["structure"]
+    distribution = results["distribution"]
 
     gran = granularity.get("optimal_granularity")
     signal = _fmt(temporal.get("temporal_signal_strength_score", np.nan))
@@ -152,11 +164,18 @@ def _build_modeling_recommendation(final_classification: str, results: dict) -> 
             f"rolling_mean_drift={_fmt(stationarity.get('rolling_mean_drift', np.nan))}, "
             f"stability_score={stability}."
         )
+    if final_classification == "Intermittent Demand":
+        zero_infl = _fmt(distribution.get("zero_inflation_ratio", np.nan))
+        return (
+            "Use intermittent demand models (Croston, SBA, or ADIDA) at "
+            f"{gran} granularity because zero_inflation_ratio={zero_infl}, "
+            f"temporal_signal_strength_score={signal}, model_improvement_ratio={model_gain}."
+        )
     if final_classification == "Event-Driven Transactional":
         return (
             "Use event/exogenous-feature models with robust loss because "
             f"volatility_classification={volatility.get('volatility_classification')}, "
-            f"distribution_classification={results['distribution'].get('distribution_classification')}, "
+            f"distribution_classification={distribution.get('distribution_classification')}, "
             f"model_improvement_ratio={model_gain}."
         )
     if final_classification == "Structural-Concentration Dominated":
@@ -191,6 +210,11 @@ def _engineering_decision_recommendation(final_classification: str, results: dic
             "Deploy a guarded baseline pipeline with rolling retrain checkpoints; "
             f"trigger investigation when stability_score<{stability} or temporal_signal_strength_score<{signal}. "
             f"Train at {gran} granularity."
+        )
+    if final_classification == "Intermittent Demand":
+        return (
+            "Proceed with intermittent demand pipeline; "
+            f"train at {gran} granularity, monitor demand-interval accuracy and zero-ratio stability."
         )
     return (
         "Proceed with production modeling and periodic diagnostics refresh; "

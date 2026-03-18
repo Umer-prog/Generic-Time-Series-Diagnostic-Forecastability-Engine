@@ -50,8 +50,6 @@ def analyze_structure(
             "gini_coefficient": np.nan,
             "herfindahl_index": np.nan,
             "entropy_normalized": np.nan,
-            "volatility_contribution_top_decile": np.nan,
-            "customer_churn_volatility": np.nan,
             "concentration_score": 0.0,
             "structure_classification": "Not provided",
         }
@@ -67,46 +65,13 @@ def analyze_structure(
     total_sum = safe_float(totals.sum(), default=0.0)
     shares = (totals / (total_sum + 1e-9)).astype(float)
 
+    entity_count = len(totals)
     top1_share = safe_float(shares.head(1).sum(), default=0.0)
     top5_share = safe_float(shares.head(5).sum(), default=0.0)
     top10_share = safe_float(shares.head(10).sum(), default=0.0)
     gini = _gini(shares.values)
     herfindahl = safe_float(np.sum((shares.values * 100.0) ** 2), default=np.nan)
     entropy_norm = _normalized_entropy(shares.values)
-
-    # Volatility contribution by top decile entities.
-    by_time_entity = (
-        work.groupby([date_col, "_entity_key"])[target_col]
-        .sum()
-        .unstack(fill_value=0.0)
-        .sort_index()
-    )
-    entity_count = len(by_time_entity.columns)
-
-    if entity_count > 0 and len(by_time_entity) > 3:
-        top_decile_n = max(1, int(np.ceil(0.10 * entity_count)))
-        top_entities = shares.head(top_decile_n).index.tolist()
-        total_ts = by_time_entity.sum(axis=1)
-        top_ts = by_time_entity[top_entities].sum(axis=1)
-        total_var = np.var(total_ts.diff().dropna().values)
-        top_var = np.var(top_ts.diff().dropna().values)
-        volatility_contribution = safe_div(top_var, total_var, default=np.nan)
-    else:
-        volatility_contribution = np.nan
-
-    # Customer/entity churn volatility per time step.
-    if len(by_time_entity) > 2:
-        active = by_time_entity > 0
-        prev_active = active.shift(1, fill_value=False).astype(bool)
-        entered = (~prev_active & active).sum(axis=1)
-        exited = (prev_active & ~active).sum(axis=1)
-        prev_count = prev_active.sum(axis=1).astype(float)
-        prev_count[prev_count == 0.0] = np.nan
-        churn_rate = (entered + exited) / prev_count
-        churn_rate = churn_rate.replace([np.inf, -np.inf], np.nan).dropna()
-        churn_volatility = safe_float(churn_rate.std(ddof=0), default=np.nan)
-    else:
-        churn_volatility = np.nan
 
     topk_pressure = top10_share if entity_count > 10 else top5_share
     concentration_score = 100.0 * (
@@ -145,8 +110,6 @@ def analyze_structure(
         "gini_coefficient": float(gini),
         "herfindahl_index": float(herfindahl),
         "entropy_normalized": float(entropy_norm),
-        "volatility_contribution_top_decile": float(volatility_contribution),
-        "customer_churn_volatility": float(churn_volatility),
         "concentration_score": float(concentration_score),
         "structure_classification": classification,
     }
