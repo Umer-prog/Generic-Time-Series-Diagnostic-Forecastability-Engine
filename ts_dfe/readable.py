@@ -446,6 +446,15 @@ def build_univariate_summary_report(report: dict) -> str:
             lines.append(f"- {item}")
     else:
         lines.append("- None")
+
+    if report.get("multivariate_recommended"):
+        lines.append("")
+        lines.append("NEXT STEP — MULTIVARIATE DIAGNOSTIC RECOMMENDED:")
+        lines.append("- Internal time-series signal alone is insufficient to determine the best model.")
+        lines.append("- Pass candidate feature columns to assess whether external drivers explain the target:")
+        lines.append("    run_ts_dfe(df, ..., target_cols=[target], feature_cols=[...], mode='multivariate')")
+        lines.append("- Key output to inspect: exogenous_signal_classification and exogenous_dominance_ratio.")
+
     return "\n".join(lines)
 
 
@@ -688,6 +697,15 @@ def build_expanded_summary_report(report: dict) -> str:
                 lines.append(f"- {item}")
         else:
             lines.append("- None")
+
+        if uni.get("multivariate_recommended"):
+            lines.append("")
+            lines.append("NEXT STEP — MULTIVARIATE DIAGNOSTIC RECOMMENDED:")
+            lines.append("- Internal time-series signal alone is insufficient to determine the best model.")
+            lines.append("- Pass candidate feature columns to assess whether external drivers explain the target:")
+            lines.append("    run_ts_dfe(df, ..., target_cols=[target], feature_cols=[...], mode='multivariate')")
+            lines.append("- Key output to inspect: exogenous_signal_classification and exogenous_dominance_ratio.")
+
         lines.append("")
 
     lines.append("SUMMARY")

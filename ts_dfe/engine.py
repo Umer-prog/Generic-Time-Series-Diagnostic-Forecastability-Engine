@@ -309,6 +309,7 @@ def _run_univariate_pipeline(
         "forecastability_score": synthesis["forecastability_score"],
         "modeling_recommendation": synthesis["modeling_recommendation"],
         "risk_flags": synthesis["risk_flags"],
+        "multivariate_recommended": synthesis["multivariate_recommended"],
         "executive_summary": synthesis["executive_summary"],
         "engineering_decision_recommendation": synthesis["engineering_decision_recommendation"],
     }

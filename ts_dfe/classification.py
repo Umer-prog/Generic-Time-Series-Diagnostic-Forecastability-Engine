@@ -60,12 +60,46 @@ def _risk_flags(results: dict) -> list[str]:
             f"Structural concentration is high: concentration_score={_fmt(structure['concentration_score'])}, "
             f"top10_revenue_share_pct={_fmt(structure['top10_revenue_share_pct'])}."
         )
-    if granularity.get("optimal_granularity") != "original":
+    # Addition 3 — Inventory stock-vs-flow detection.
+    # A non-negative, non-stationary, strongly trending series is likely a cumulative balance
+    # (closing stock). Forecasting the level directly will produce biased results — net movement
+    # (receipts − issues) should be modelled instead.
+    trend_r2 = safe_float(stationarity.get("trend_strength_r2", 0.0), default=0.0)
+    neg_ratio = safe_float(integrity.get("negative_ratio", 1.0), default=1.0)
+    adf_pval = safe_float(stationarity.get("adf_pvalue", 0.0), default=0.0)
+    stat_class = stationarity.get("stationarity_classification", "")
+    if (
+        trend_r2 >= 0.50
+        and neg_ratio == 0.0
+        and adf_pval > 0.05
+        and stat_class in {"Trend-dominated", "Regime-shifting"}
+    ):
         flags.append(
-            "Signal is stronger at aggregated granularity — consider modeling at this level: "
-            f"optimal_granularity={granularity.get('optimal_granularity')}, "
-            f"signal_gain_ratio={_fmt(granularity.get('signal_gain_ratio', np.nan))}."
+            "Possible cumulative balance series (non-negative, non-stationary, strong monotonic trend) — "
+            "if this is a stock or inventory level, forecast net movement (receipts - issues) and "
+            "reconstruct the balance; direct level modeling produces systematically biased forecasts: "
+            f"trend_strength_r2={_fmt(trend_r2)}, negative_ratio=0.000, adf_pvalue={_fmt(adf_pval)}."
         )
+
+    # Addition 4 — Finance/ledger granularity flag tone.
+    # For transactional (skewed or zero-inflated) data, optimal_granularity != "original" is the
+    # correct finding, not a risk. Tone changes from warning to recommendation.
+    if granularity.get("optimal_granularity") != "original":
+        dist_class = distribution.get("distribution_classification", "")
+        is_transactional = dist_class in {"Skewed transactional", "Zero-inflated"}
+        if is_transactional:
+            flags.append(
+                "Transactional/ledger data — modeling at aggregated granularity is the recommended "
+                "outcome, not a risk. Aggregate before modeling: "
+                f"optimal_granularity={granularity.get('optimal_granularity')}, "
+                f"signal_gain_ratio={_fmt(granularity.get('signal_gain_ratio', np.nan))}."
+            )
+        else:
+            flags.append(
+                "Signal is stronger at aggregated granularity — consider modeling at this level: "
+                f"optimal_granularity={granularity.get('optimal_granularity')}, "
+                f"signal_gain_ratio={_fmt(granularity.get('signal_gain_ratio', np.nan))}."
+            )
 
     return flags
 
@@ -190,10 +224,13 @@ def _build_modeling_recommendation(final_classification: str, results: dict) -> 
             f"temporal_signal_strength_score={signal}, stability_score={stability}, "
             f"model_improvement_ratio={model_gain}."
         )
+    # Externally Driven: internal pattern is insufficient — route user to multivariate diagnostic.
     return (
-        "Use external-regressor or causal models with frequent retraining because "
-        f"temporal_signal_strength_score={signal}, volatility_risk_score={_fmt(volatility.get('volatility_risk_score', np.nan))}, "
-        f"model_improvement_ratio={model_gain}."
+        "Internal time-series pattern insufficient for reliable univariate forecasting. "
+        "Run multivariate mode with candidate feature columns to quantify exogenous utility "
+        "before selecting a model family: "
+        f"temporal_signal_strength_score={signal}, model_improvement_ratio={model_gain}, "
+        f"volatility_classification={volatility.get('volatility_classification')}."
     )
 
 
@@ -215,6 +252,15 @@ def _engineering_decision_recommendation(final_classification: str, results: dic
         return (
             "Proceed with intermittent demand pipeline; "
             f"train at {gran} granularity, monitor demand-interval accuracy and zero-ratio stability."
+        )
+    if final_classification == "Externally Driven":
+        return (
+            "Do not proceed with univariate pipeline. "
+            "Run multivariate diagnostic first with candidate feature columns. "
+            "Proceed with feature-based model if exogenous_dominance_ratio > 0.6 (Exogenous Dominated) "
+            "or Mixed Drivers is confirmed. "
+            f"Use conservative AR baseline only if Autoregressive Dominated is confirmed. "
+            f"Train at {gran} granularity."
         )
     return (
         "Proceed with production modeling and periodic diagnostics refresh; "
@@ -256,6 +302,13 @@ def synthesize(results: dict) -> dict:
     recommendation = _build_modeling_recommendation(final_classification, results)
     risk_flags = _risk_flags(results)
 
+    # Multivariate readiness: signal is too weak or no internal pattern dominates —
+    # external features should be tested before committing to a model family.
+    multivariate_recommended = final_classification in {"Externally Driven", "Low Forecastability"} or (
+        safe_float(temporal.get("temporal_signal_strength_score", np.nan), default=0.0) < 55.0
+        and safe_float(granularity.get("model_improvement_ratio", 0.0), default=0.0) < 0.30
+    )
+
     executive_summary = (
         f"{final_classification} with forecastability_score={forecastability_score:.2f}. "
         f"Key metrics: temporal_signal_strength_score={_fmt(temporal_component)}, "
@@ -270,6 +323,7 @@ def synthesize(results: dict) -> dict:
         "forecastability_score": float(forecastability_score),
         "modeling_recommendation": recommendation,
         "risk_flags": risk_flags,
+        "multivariate_recommended": bool(multivariate_recommended),
         "executive_summary": executive_summary,
         "engineering_decision_recommendation": engineering_recommendation,
     }
